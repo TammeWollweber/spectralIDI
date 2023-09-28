@@ -83,19 +83,32 @@ class Signal():
             self.sample[(self.offset+25-half_size):(self.offset+25+half_size),(self.offset+20-half_size):(self.offset+20+half_size)] = 1
             self.sample[(self.offset+25-half_size):(self.offset+25+half_size),(self.offset+40-half_size):(self.offset+40+half_size)] = 1
             
-        indices = np.nonzero(self.sample)
-        self.num_scatterer = len(indices[0])  # number of scatterers
-        self.loc_scatterer = np.zeros((self.num_scatterer,2))
-        self.loc_scatterer[:,0] = indices[0][:]
-        self.loc_scatterer[:,1] = indices[1][:]
+        #2D
+        #indices = np.nonzero(self.sample)
+        #self.num_scatterer = len(indices[0])  # number of scatterers
+        #self.loc_scatterer = np.zeros((self.num_scatterer,2))
+        #self.loc_scatterer[:,0] = indices[0][:]
+        #self.loc_scatterer[:,1] = indices[1][:]
           
-        self.kvector = np.zeros((2,) + self.det_shape)
-        self.kvector[0,:,:], _ = np.indices(self.det_shape)
-        self.kvector[0,:,:] -= self.det_shape[0]//2
-        self.kvector[0,:,:] *= self.kscale_x
-        self.kvector = self.kvector.reshape(2,self.det_shape[0]*self.det_shape[1])
-        
-        self.r_k = np.dot(self.loc_scatterer,self.kvector)
+        #self.kvector = np.zeros((2,) + self.det_shape)
+        #self.kvector[0,:,:], _ = np.indices(self.det_shape)
+        #self.kvector[0,:,:] -= self.det_shape[0]//2
+        #self.kvector[0,:,:] *= self.kscale_x
+        #self.kvector = self.kvector.reshape(2,self.det_shape[0]*self.det_shape[1]) 
+        #self.kvector = self.kvector.reshape(2,self.det_shape[0]) 
+        #self.r_k = np.dot(self.loc_scatterer,self.kvector)
+ 
+        # 1D
+        self.loc_scatterer = np.nonzero(self.sample)[0]
+        self.num_scatterer = len(self.loc_scatterer)  # number of scatterers
+        self.kvector = np.arange(self.det_shape[0])
+        self.kvector -= self.det_shape[0]//2
+        self.kvector = self.kvector * self.kscale_x
+
+        self.r_k = np.matmul(self.loc_scatterer[:,np.newaxis],self.kvector[np.newaxis,:])
+
+    def lorentzian(self, x, x0, a, gam):
+        return a * gam**2 / (gam**2 + (x-x0)**2)
         
     def worker(self, i, counter, mean_counts, dict_raw):
         print('\r', counter + i)
@@ -103,25 +116,23 @@ class Signal():
         diff_pattern = np.zeros(self.det_shape)
         if not self.incoherent:
             phases_rand = np.zeros((self.num_scatterer,1))
+        indices = np.arange(self.num_scatterer)
+        np.random.shuffle(indices)
         for m in range(self.num_modes):
             if self.incoherent:
-                phases_rand = np.array(np.random.random(size=(self.num_scatterer//self.num_modes,1))*2*np.pi)
-            psi = np.exp(1j*(self.r_k[(m*self.num_scatterer//self.num_modes):((m+1)*self.num_scatterer//self.num_modes)]+phases_rand)).sum(0).reshape(self.det_shape)
+                phases_rand = np.array(np.random.random(size=(self.num_scatterer//self.num_modes,self.det_shape[1]))*2*np.pi)
+            psi = np.exp(1j*(self.r_k[indices[(m*self.num_scatterer//self.num_modes):((m+1)*self.num_scatterer//self.num_modes)],:,np.newaxis].transpose(1,0,2)+phases_rand)).sum(1).reshape(self.det_shape)
             mode_intensity = np.multiply(np.conjugate(psi), psi)
-            counts = mean_counts//self.num_modes #0.5*my_psi.shape[0]*my_psi.shape[1]        # 0.5 photon counts per pixel, 32768 photons on average per shot
-            norm = np.sum(np.sum(mode_intensity,axis=0),axis=0)
-            intensity_normalized = np.divide(mode_intensity,norm)*counts
+            norm = np.sum(mode_intensity,axis=0)
+            spectrum = self.lorentzian(np.arange(self.det_shape[1]), 80, 1, 10)
+            dist = np.random.poisson(spectrum/spectrum.sum()*mean_counts/self.num_modes, self.det_shape[1])
+            intensity_normalized = np.divide(mode_intensity,norm)*dist
             intensity_poisson = np.random.poisson(np.abs(intensity_normalized),size=intensity_normalized.shape)
             diff_pattern += intensity_poisson
 
         diff_pattern *= self.adu_phot
         gauss_noise = np.random.normal(self.noise_level,2.5,self.det_shape)
         diff_pattern += gauss_noise
-
-        mask = np.zeros(self.det_shape)
-        mask[:,79] = 1
-        diff_pattern *= mask
-
         dict_raw[i] = diff_pattern
 
     def simulate(self, mean_counts=None):
@@ -187,11 +198,11 @@ class Signal():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-s', '--size', nargs='+', type=int, help='det_shape', default=(135,160))
-    parser.add_argument('-N', '--num_shots', type=int, default=10)
+    parser.add_argument('-N', '--num_shots', type=int, default=1000)
     parser.add_argument('-M', '--photon_density', type=float, default=0.03, help='Number of photons per pixel')
     parser.add_argument('-n', '--noise', type=int, default=60, help='Noise level')
-    parser.add_argument('-m', '--modes', type=int, default=1, help='Number of modes')
-    parser.add_argument('-l', '--lines', type=int, default=0, help='Sample shape')
+    parser.add_argument('-m', '--modes', type=int, default=10, help='Number of modes')
+    parser.add_argument('-l', '--lines', type=int, default=1, help='Sample shape')
     parser.add_argument('-i', '--incoherent', type=int, default=1, help='Incoherent/coherent simulation')
     args = parser.parse_args()
 
@@ -199,7 +210,7 @@ if __name__ == '__main__':
     print('incoherent: ', args.incoherent)
     det_shape = tuple(args.size)
     #num_photons = np.ceil(args.photon_density * det_shape[0] * det_shape[1]).astype(int)
-    num_photons = 10000
+    num_photons = 1000
  
     sig = Signal(det_shape=det_shape, shots=args.num_shots, num_photons=num_photons, noise=args.noise, num_modes=args.modes, lines=args.lines, incoherent=args.incoherent)
     sig.create_sample()
