@@ -16,8 +16,8 @@ from cupyx.scipy import ndimage as cundimage
 from scipy import signal
 import natsort
 
-NUM_DEV = 1
-JOBS_PER_DEV = 1
+NUM_DEV = 4
+JOBS_PER_DEV = 4
 
 class ProcessCorr():
     def __init__(self, flist, output_fname, mask_fname=None, fshape=(540, 640), num_bins=1):
@@ -268,6 +268,7 @@ def main():
     parser.add_argument('-c', '--config_fname', help='Config file',
                         default='config.ini')
     parser.add_argument('-s', '--config_section', help='Section in config file (default: corr)', default='corr')
+    parser.add_argument('-r', '--run_num', type=int, help='run_num, if None take from config file', default=-1)
     args = parser.parse_args()
 
     config = configparser.ConfigParser(interpolation=configparser.ExtendedInterpolation())
@@ -277,7 +278,10 @@ def main():
     fshape = tuple([int(i) for i in config.get(section, 'frame_shape').split()])
     mask_fname = config.get(section, 'mask_fname', fallback=None)
     exp = config.get(section, 'date_str')
-    runs = [int(r) for r in config.get(section, 'runs').split()]
+    if args.run_num == -1:
+        runs = [int(r) for r in config.get(section, 'runs').split()]
+    else:
+        runs = [args.run_num]
     #start = config.getint(section, 'start_block', fallback=0)
     starts = [int(s) for s in config.get(section, 'start_block').split()]
     file_chunk = config.getint(section, 'file_chunk', fallback=1000)
@@ -289,6 +293,8 @@ def main():
     min_val = config.getint(section, 'min_val', fallback=None)
     max_val = config.getint(section, 'max_val', fallback=None)
     suffix = config.get(section, 'output_suffix', fallback=None)
+
+
 
     for r in runs:
         for s in starts:
