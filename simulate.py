@@ -69,6 +69,8 @@ class Signal():
         else:
             flist = glob.glob(dpath+'/*.npy')
             flist = [os.path.basename(f) for f in flist]
+            flist = list(set([f.split('_')[0] for f in flist]))
+            flist.sort()
             self.run_num = len(flist)
             print(flist)
         print('Start simulation run {}.'.format(self.run_num))
@@ -86,7 +88,7 @@ class Signal():
             self.sample[(self.offset-half_size):(self.offset+half_size),(self.offset-half_size):(self.offset+half_size)] = 1
             
         print('sample shape: ', len(np.nonzero(self.sample)[0]))
-        self.sample = ndi.gaussian_filter(sig.sample, 1)
+        #self.sample = ndi.gaussian_filter(sig.sample, 1)
         #2D
         #indices = np.nonzero(self.sample)
         #self.num_scatterer = len(indices[0])  # number of scatterers
@@ -113,60 +115,44 @@ class Signal():
     def worker(self, i, counter, mean_counts, dict_raw):
         def lorentzian(x, x0, a, gam):
             return a * gam**2 / (gam**2 + (x-x0)**2)
-        #print('\r', counter + i)
         np.random.seed(i+int(time.time()))
         diff_pattern = np.zeros(self.det_shape)
-        """
-        Calculate spectrum including Kbeta, Kalpha1 and Kalpha2. Detecter energy range 8keV-9keV
-        """
-        spectrum = lorentzian(np.arange(self.det_shape[1]), 845/self.binning, 0.2, 3.7/self.binning) +  lorentzian(np.arange(self.det_shape[1]), 194.7/self.binning, 1, 2.11/self.binning) + lorentzian(np.arange(self.det_shape[1]), 179/self.binning, 0.5, 2.17/self.binning)  
-        dist = np.random.poisson(spectrum/spectrum.sum()*0.9*mean_counts/self.num_modes, self.det_shape[1])
-        #argmin = np.argmin(spectrum)
-        #num_scatterer = (dist[:argmin].sum(), dist[argmin:].sum())
-        num_scatterer = dist.sum()
+        #spectrum = lorentzian(np.arange(self.det_shape[1]), (1024//self.binning)+16, 1, 2.11/self.binning) + lorentzian(np.arange(self.det_shape[1]), (1024//self.binning)-17, 0.5, 2.17/self.binning)  
+        kx1 = (1024//2+16)//self.binning
+        kx2 = (1024//2-17)//self.binning
+        kalpha1 = lorentzian(np.arange(self.det_shape[1]), kx1, 1, 2.11/self.binning)  
+        kalpha2 = lorentzian(np.arange(self.det_shape[1]), kx2, 0.5, 2.17/self.binning)  
+        num_scatterer = (mean_counts//3*2, mean_counts//3)
         if not self.incoherent:
             phases_rand = np.zeros((np.sum(num_scatterer),1))
        
-        res = np.zeros(self.det_shape)
         for m in range(self.num_modes):
-            # Kalpha and Kbeta do not interfer:
-            indices = np.arange(dist.sum())
+            indices = np.arange(mean_counts)
             np.random.shuffle(indices)
-            #indices = (indices[:num_scatterer[0]], indices[num_scatterer[0]:])
-            #spec_mode = np.zeros(self.det_shape)
-            if self.incoherent:
-                phases_rand = np.array(np.random.random(size=(num_scatterer//self.num_modes,self.det_shape[1]))*2*np.pi)
-            r_k = np.matmul(self.loc_scatterer[indices%len(self.loc_scatterer),np.newaxis],self.kvector[np.newaxis,:])
-            psi = np.exp(1j*(r_k[m*(num_scatterer//self.num_modes):(m+1)*(num_scatterer//self.num_modes),:,np.newaxis].transpose(1,0,2)+phases_rand)).sum(1).reshape(self.det_shape)
-            mode_int = np.abs(psi)**2
-            norm = np.sum(mode_int,axis=0)
-            int_scaled = mode_int/norm * dist
-            #filter due to energy uncertainty
-            int_filter = ndi.gaussian_filter(int_scaled, sigma=(0,0.2), mode='constant')
-            #filter due to estimated coherence across columns
-            #int_filter = ndi.gaussian_filter(int_scaled, sigma=(0,3), mode='constant')
-
-            int_p = np.random.poisson(int_filter,size=int_filter.shape)
+            indices = (indices[:num_scatterer[0]], indices[num_scatterer[0]:])
+            spec_mode_conv = np.zeros(self.det_shape)
+            for k in range(2):
+                phases_rand = np.array(np.random.random(size=(num_scatterer[k]//self.num_modes,self.det_shape[1]))*2*np.pi)
+                r_k = np.matmul(self.loc_scatterer[indices[k]%len(self.loc_scatterer),np.newaxis],self.kvector[np.newaxis,:])
+                psi = np.exp(1j*(r_k[m*(num_scatterer[k]//self.num_modes):(m+1)*(num_scatterer[k]//self.num_modes),:]+phases_rand)).sum(0).reshape(self.det_shape[0])
+                mode_int = np.abs(psi)**2
+                
+                if k == 0:
+                    spec_mode = np.zeros(self.det_shape)
+                    spec_mode[:,kx1] = mode_int
+                    mode_conv = signal.fftconvolve(spec_mode, kalpha1[np.newaxis,:], axes=1, mode='same')
+                    spec_mode_conv += mode_conv / mode_conv.sum() * num_scatterer[k]
+                else:
+                    spec_mode = np.zeros(self.det_shape)
+                    spec_mode[:,kx2] = mode_int
+                    mode_conv = signal.fftconvolve(spec_mode, kalpha2[np.newaxis,:], axes=1, mode='same')
+                    spec_mode_conv += mode_conv / mode_conv.sum() * num_scatterer[k]
+                
+            #int_filter = ndi.gaussian_filter(spec_mode_conv, sigma=(0,1.13), mode='constant')
+            #int_filter = ndi.gaussian_filter(spec_mode_conv, sigma=(0,0), mode='constant')
+            int_p = np.random.poisson(np.abs(spec_mode_conv),size=self.det_shape)
             int_p *= self.adu_phot
             diff_pattern += int_p
-                                      
-            #for p in range(2):
-                #phases_rand = np.array(np.random.random(size=(num_scatterer[p]//self.num_modes,self.det_shape[1]))*2*np.pi)
-                #r_k = np.matmul(self.loc_scatterer[indices[p],np.newaxis],self.kvector[np.newaxis,:])
-                #psi = np.exp(1j*(r_k[m*(num_scatterer[p]//self.num_modes):(m+1)*(num_scatterer[p]//self.num_modes),:].transpose(1,0)+phases_rand)).sum(1).reshape(self.det_shape[0])
-                #mode_int = np.abs(psi)**2
-                #norm = np.sum(mode_int,axis=0)
-                
-                #if p == 0:
-                #    spec_mode[:,:argmin] = (mode_int/norm)[:, np.newaxis] * dist[:argmin]
-                #else:
-                #spec_mode[:,argmin:] = (mode_int/norm)[:, np.newaxis] * dist[argmin:]
-                #int_norm = (mode_intensity / norm) * dist
-                #int_filter = ndi.gaussian_filter(spec_mode, sigma=(0,1.13), mode='constant')
-                #int_norm = int_filter * dist
-                #int_p = np.random.poisson(np.abs(int_norm),size=int_norm.shape)
-                #int_p *= self.adu_phot
-                #diff_pattern += int_p
         
         gauss_noise = np.random.normal(self.noise_level,2.5,self.det_shape)
         diff_pattern += gauss_noise
@@ -247,7 +233,7 @@ if __name__ == '__main__':
 
     det_shape = tuple(args.size)
     #num_photons = np.ceil(args.photon_density * det_shape[0] * det_shape[1]).astype(int)
-    num_photons = 1000
+    num_photons = 100000
  
     sig = Signal(det_shape=det_shape, binning=args.binning, shots=args.num_shots, num_photons=num_photons, noise=args.noise, num_modes=args.modes, lines=args.lines, incoherent=args.incoherent)
     sig.create_sample()
