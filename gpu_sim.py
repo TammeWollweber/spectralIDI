@@ -205,9 +205,9 @@ class Signal():
                          mode_conv = spec_mode
                     spec_mode_conv += mode_conv / mode_conv.sum() * num_scatterer[k]
                 
-            #int_filter = cundimage.gaussian_filter(spec_mode_conv, sigma=(0,1.13), mode='constant')
+            int_filter = cundimage.gaussian_filter(spec_mode_conv, sigma=(0,1.13), mode='constant')
             #int_filter = cundimage.gaussian_filter(spec_mode_conv, sigma=(0,0), mode='constant')
-            int_p = cp.random.poisson(cp.abs(spec_mode_conv),size=self.det_shape)
+            int_p = cp.random.poisson(cp.abs(int_filter),size=self.det_shape)
             int_p *= self.adu_phot
             diff_pattern += int_p
 
