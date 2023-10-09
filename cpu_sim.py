@@ -15,22 +15,23 @@ import multiprocessing as mp
 from scipy import signal
 from scipy import ndimage as ndi
 import h5py as h5
-from utils import decorate_all, info
 import argparse
 plt.ion()
 
-@decorate_all(info)
 class Signal():  
-    def __init__(self, det_shape=(1024,1024), binning=8, shots=1000, num_photons=50, noise=60, num_modes=1, lines=True, incoherent=False):
+    def __init__(self, det_shape=(1024,1024), binning=8, shots=1000, num_photons=50,
+                 noise=60, num_modes=1, lines=True, incoherent=False, efilter=False,
+                 total=False, alpha_modes=2):
         self.det_shape = tuple(np.array(det_shape) // binning)
         print('det_shape: ', self.det_shape)        
         self.binning = binning
         self.lines = lines
-        #self.offset = self.det_shape[0]//2 - self.det_shape[0]//4 
         self.offset = self.det_shape[0]//2
-        self.kscale_x = 2*np.pi/(self.det_shape[0])
-        #self.kscale_y = 2*np.pi/self.det_shape[1]
+        self.kscale_x = 2*np.pi/(self.det_shape[0]*4)
         self.num_modes = num_modes
+        self.full_frame = total
+        self.alpha_modes = alpha_modes
+        self.efilter = efilter
 
         self.size_emitter = 32
         self.sample = None
@@ -38,7 +39,6 @@ class Signal():
         self.hits = []
         self.hit_size = None
         self.shots = shots 
-        self.num_scatterer = None
         self.loc_scatterer = None
         self.kvector = None
         self.r_k = None
@@ -87,65 +87,71 @@ class Signal():
             half_size = int(self.size_emitter/2)
             self.sample[(self.offset-half_size):(self.offset+half_size),(self.offset-half_size):(self.offset+half_size)] = 1
             
-        print('sample shape: ', len(np.nonzero(self.sample)[0]))
-        #self.sample = ndi.gaussian_filter(sig.sample, 1)
-        #2D
-        #indices = np.nonzero(self.sample)
-        #self.num_scatterer = len(indices[0])  # number of scatterers
-        #self.loc_scatterer = np.zeros((self.num_scatterer,2))
-        #self.loc_scatterer[:,0] = indices[0][:]
-        #self.loc_scatterer[:,1] = indices[1][:]
-          
-        #self.kvector = np.zeros((2,) + self.det_shape)
-        #self.kvector[0,:,:], _ = np.indices(self.det_shape)
-        #self.kvector[0,:,:] -= self.det_shape[0]//2
-        #self.kvector[0,:,:] *= self.kscale_x
-        #self.kvector = self.kvector.reshape(2,self.det_shape[0]*self.det_shape[1]) 
-        #self.kvector = self.kvector.reshape(2,self.det_shape[0]) 
-        #self.r_k = np.dot(self.loc_scatterer,self.kvector)
- 
         # 1D
+        min_val = np.min(np.nonzero(self.sample)[0] - self.center[0])
+        max_val = np.max(np.nonzero(self.sample)[0] - self.center[0])
         self.loc_scatterer = np.nonzero(self.sample)[0] - self.center[0]
+        #self.loc_scatterer = np.linspace(min_val, max_val, self.num_photons)
         self.kvector = np.arange(self.det_shape[0])
         self.kvector -= self.det_shape[0]//2
         self.kvector = self.kvector * self.kscale_x
 
 
-       
-    def worker(self, i, counter, mean_counts, dict_raw):
-        def lorentzian(x, x0, a, gam):
+    def lorentzian(self, x, x0, a, gam):
             return a * gam**2 / (gam**2 + (x-x0)**2)
+       
+    def worker(self, i, counter, dict_raw):
         np.random.seed(i+int(time.time()))
         diff_pattern = np.zeros(self.det_shape)
-        #spectrum = lorentzian(np.arange(self.det_shape[1]), (1024//self.binning)+16, 1, 2.11/self.binning) + lorentzian(np.arange(self.det_shape[1]), (1024//self.binning)-17, 0.5, 2.17/self.binning)  
         kx1 = (1024//2+16)//self.binning
         kx2 = (1024//2-17)//self.binning
-        kalpha1 = lorentzian(np.arange(self.det_shape[1]), kx1, 1, 2.11/self.binning)  
-        kalpha2 = lorentzian(np.arange(self.det_shape[1]), kx2, 0.5, 2.17/self.binning)  
-        num_scatterer = (mean_counts//3*2, mean_counts//3)
-        if not self.incoherent:
-            phases_rand = np.zeros((np.sum(num_scatterer),1))
+        kalpha1 = self.lorentzian(np.arange(self.det_shape[1]), kx1, 1, 2.11/self.binning)  
+        kalpha2 = self.lorentzian(np.arange(self.det_shape[1]), kx2, 0.5, 2.17/self.binning)  
+        num_scatterer = (self.shots//3*2, self.shots//3)
        
         for m in range(self.num_modes):
-            indices = np.arange(mean_counts)
+            indices = np.arange(self.shots)
             np.random.shuffle(indices)
             indices = (indices[:num_scatterer[0]], indices[num_scatterer[0]:])
             spec_mode_conv = np.zeros(self.det_shape)
-            for k in range(2):
-                phases_rand = np.array(np.random.random(size=(num_scatterer[k]//self.num_modes,self.det_shape[1]))*2*np.pi)
+            for k in range(self.alpha_modes):
+                if self.full_frame:
+                    if self.incoherent:
+                        phases_rand = np.array(np.random.random(size=(num_scatterer[k]//self.num_modes,self.det_shape[1]))*2*np.pi)
+                    else:
+                        phases_rand = np.zeros((num_scatterer[k],self.det_shape[1]))
+                else:
+                    if self.incoherent:
+                        phases_rand = np.array(np.random.random(size=(num_scatterer[k]//self.num_modes))*2*np.pi)
+                    else:
+                        phases_rand = np.zeros(num_scatterer[k])
                 r_k = np.matmul(self.loc_scatterer[indices[k]%len(self.loc_scatterer),np.newaxis],self.kvector[np.newaxis,:])
-                psi = np.exp(1j*(r_k[m*(num_scatterer[k]//self.num_modes):(m+1)*(num_scatterer[k]//self.num_modes),:]+phases_rand)).sum(0).reshape(self.det_shape[0])
+                if self.full_frame:
+                    psi = np.exp(1j*(r_k[m*(num_scatterer[k]//self.num_modes):(m+1)*(num_scatterer[k]//self.num_modes),:,np.newaxis].transpose(1,0,2)+phases_rand)).sum(1).reshape(self.det_shape)
+                else:
+                    psi = np.exp(1j*(r_k[m*(num_scatterer[k]//self.num_modes):(m+1)*(num_scatterer[k]//self.num_modes),:].T+phases_rand)).sum(1).reshape(self.det_shape[0])
                 mode_int = np.abs(psi)**2
                 
+                spec_mode = np.zeros(self.det_shape)
                 if k == 0:
-                    spec_mode = np.zeros(self.det_shape)
-                    spec_mode[:,kx1] = mode_int
-                    mode_conv = signal.fftconvolve(spec_mode, kalpha1[np.newaxis,:], axes=1, mode='same')
+                    if self.full_frame:
+                        spec_mode = mode_int
+                    else:
+                        spec_mode[:,kx1] = mode_int
+                    if self.efilter:
+                        mode_conv = signal.fftconvolve(spec_mode, kalpha1[np.newaxis,:], axes=1, mode='same')
+                    else:
+                        mode_conv = spec_mode
                     spec_mode_conv += mode_conv / mode_conv.sum() * num_scatterer[k]
                 else:
-                    spec_mode = np.zeros(self.det_shape)
-                    spec_mode[:,kx2] = mode_int
-                    mode_conv = signal.fftconvolve(spec_mode, kalpha2[np.newaxis,:], axes=1, mode='same')
+                    if self.full_frame:
+                        spec_mode = mode_int
+                    else:
+                        spec_mode[:,kx2] = mode_int
+                    if self.efilter:
+                        mode_conv = signal.fftconvolve(spec_mode, kalpha2[np.newaxis,:], axes=1, mode='same')
+                    else:
+                        mode_conv = spec_mode
                     spec_mode_conv += mode_conv / mode_conv.sum() * num_scatterer[k]
                 
             #int_filter = ndi.gaussian_filter(spec_mode_conv, sigma=(0,1.13), mode='constant')
@@ -158,10 +164,7 @@ class Signal():
         diff_pattern += gauss_noise
         dict_raw[i] = diff_pattern
 
-    def simulate(self, mean_counts=None):
-        if mean_counts is None:
-            mean_counts = self.num_photons
-
+    def simulate(self):
         self.data = []
         self.file_per_run_counter = 0
 
@@ -191,11 +194,10 @@ class Signal():
                 counter = mp_step*i+l*self.shots_per_file
                 if i == (mp_chunks - 1):
                     jobs = [mp.Process(target=self.worker, args=(k,counter,
-                                                                 mean_counts, dict_raw)) for
+                                                                 dict_raw)) for
                             k in range(rest)]
                 else:
                     jobs = [mp.Process(target=self.worker, args=(k,counter,
-                                                                 mean_counts,
                                                                  dict_raw)) for
                             k in range(mp_step)]
                 [j.start() for j in jobs]
@@ -214,7 +216,7 @@ class Signal():
 
     def save_raw_data(self):
         dpath = self.dir + '{}/'.format(self.exp)
-        np.ndarray.tofile(np.array(self.data).astype('u2'), dpath+'Run{}_{:04d}.npy'.format(self.run_num,
+        np.ndarray.tofile((np.array(self.data)/100).astype('u2'), dpath+'Run{}_{:04d}.npy'.format(self.run_num,
                                                 self.file_per_run_counter))
        
 
@@ -225,17 +227,22 @@ if __name__ == '__main__':
     parser.add_argument('-b', '--binning', type=int, default=8, help='binning 1024x1024 det')
     parser.add_argument('-N', '--num_shots', type=int, default=1000)
     parser.add_argument('-M', '--photon_density', type=float, default=0.03, help='Number of photons per pixel')
-    parser.add_argument('-n', '--noise', type=int, default=60, help='Noise level')
+    parser.add_argument('-o', '--noise', type=int, default=60, help='Noise level')
+    parser.add_argument('-n', '--num_photons', type=int, default=1000, help='Number of photons per shot')
     parser.add_argument('-m', '--modes', type=int, default=30, help='Number of modes')
     parser.add_argument('-l', '--lines', type=int, default=0, help='Sample shape')
     parser.add_argument('-i', '--incoherent', type=int, default=1, help='Incoherent/coherent simulation')
+    parser.add_argument('-f', '--filter', type=int, default=0, help='Convolve energies')
+    parser.add_argument('-t', '--total', type=int, default=0, help='Populate full (total) detector')
+    parser.add_argument('-a', '--alpha', type=int, default=2, help='Number of kalpha modes')
+
     args = parser.parse_args()
 
     det_shape = tuple(args.size)
     #num_photons = np.ceil(args.photon_density * det_shape[0] * det_shape[1]).astype(int)
-    num_photons = 100000
+    num_photons = args.num_photons
  
-    sig = Signal(det_shape=det_shape, binning=args.binning, shots=args.num_shots, num_photons=num_photons, noise=args.noise, num_modes=args.modes, lines=args.lines, incoherent=args.incoherent)
+    sig = Signal(det_shape=det_shape, binning=args.binning, shots=args.num_shots, num_photons=num_photons, noise=args.noise, num_modes=args.modes, lines=args.lines, incoherent=args.incoherent, efilter=args.filter, total=args.total, alpha_modes=args.alpha)
     sig.create_sample()
     sig.simulate()
 
