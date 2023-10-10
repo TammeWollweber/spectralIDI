@@ -107,10 +107,10 @@ class Signal():
         kx2 = (1024//2-17)//self.binning
         kalpha1 = self.lorentzian(np.arange(self.det_shape[1]), kx1, 1, 2.11/self.binning)  
         kalpha2 = self.lorentzian(np.arange(self.det_shape[1]), kx2, 0.5, 2.17/self.binning)  
-        num_scatterer = (self.shots//3*2, self.shots//3)
+        num_scatterer = (self.num_photons//3*2, self.num_photons//3)
        
         for m in range(self.num_modes):
-            indices = np.arange(self.shots)
+            indices = np.arange(self.num_photons)
             np.random.shuffle(indices)
             indices = (indices[:num_scatterer[0]], indices[num_scatterer[0]:])
             spec_mode_conv = np.zeros(self.det_shape)
