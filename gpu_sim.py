@@ -41,7 +41,7 @@ class Signal():
         self.num_modes = num_modes
         self.alpha_modes = alpha_modes
 
-        self.size_emitter = 32
+        self.size_emitter = 10
         self.sample = None
         self.center = np.array(self.det_shape)//2 - 1
         self.hits = []
@@ -162,14 +162,12 @@ class Signal():
         diff_pattern = cp.zeros(self.det_shape)
         if self.alpha_modes == 1:
             num_scatterer = self.num_photons
-            indices = cp.random.randint(0, self.num_photons, size=(self.num_modes, self.num_photons//self.num_modes)) % self.ind_scale
-            #indices = cp.random.random((self.num_modes, self.num_photons//self.num_modes))
-            #indices = ((indices-indices.min())*(self.loc_scatterer.max()-self.loc_scatterer.min())) / (indices.max()-indices.min()) - self.loc_scatterer.min()
+            indices = cp.random.randint(0, self.ind_scale, size=(self.num_modes, self.num_photons//self.num_modes))
             if self.incoherent:
                 phases_rand = cp.array(cp.random.random(size=(self.num_modes, num_scatterer//self.num_modes))*2*cp.pi)
             else:
                 phases_rand = cp.zeros((self.num_modes, num_scatterer//self.num_modes))
-            r_k = cp.matmul(self.loc_scatterer[indices,cp.newaxis],self.kvector[cp.newaxis,:])
+            r_k = cp.matmul(self.loc_scatterer[indices%len(self.loc_scatterer),cp.newaxis],self.kvector[cp.newaxis,:])
             psi = cp.exp(1j*(r_k.transpose(2,0,1)+phases_rand)).sum(2).transpose(1,0)
             psi2d = psi[:,:,cp.newaxis] * spectrum[cp.newaxis,:]
             mode_int = cp.abs(psi2d)**2
@@ -178,8 +176,8 @@ class Signal():
 
         elif self.alpha_modes == 2:
             num_scatterer = np.array([self.num_photons//3*2, self.num_photons//3])
-            ind1 = cp.random.randint(self.loc_scatterer.min(), self.loc_scatterer.max(), size=(self.num_modes, num_scatterer[0]//self.num_modes)) % self.ind_scale
-            ind2 = cp.random.randint(self.loc_scatterer.min(), self.loc_scatterer.max(), size=(self.num_modes, num_scatterer[1]//self.num_modes)) % self.ind_scale
+            ind1 = cp.random.randint(0, self.ind_scale, size=(self.num_modes, num_scatterer[0]//self.num_modes))
+            ind2 = cp.random.randint(0, self.ind_scale, size=(self.num_modes, num_scatterer[1]//self.num_modes))
             indices = (ind1, ind2)
             int_tot = cp.zeros(self.det_shape)
             for k in range(self.alpha_modes):
