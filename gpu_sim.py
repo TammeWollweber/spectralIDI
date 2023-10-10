@@ -161,7 +161,7 @@ class Signal():
         diff_pattern = cp.zeros(self.det_shape)
         if self.alpha_modes == 1:
             num_scatterer = self.num_photons
-            indices = cp.tile(cp.arange(self.num_photons)//self.num_modes, self.num_modes).reshape(self.num_modes, self.num_photons)
+            indices = cp.tile(cp.arange(self.num_photons), self.num_modes).reshape(self.num_modes, self.num_photons)[:, :self.num_photons//self.num_modes]
 
             cp.random.shuffle(indices.T)
             if self.incoherent:
