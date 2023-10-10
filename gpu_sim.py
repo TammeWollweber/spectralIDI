@@ -29,8 +29,7 @@ JOBS_PER_DEV = 4
 
 class Signal():  
     def __init__(self, det_shape=(1024,1024), binning=8, num_shots=1000, num_photons=50,
-                 noise=60, num_modes=1, lines=True, incoherent=False, efilter=False,
-                 total=False, alpha_modes=2):
+                 noise=60, num_modes=1, lines=True, incoherent=False, efilter=False, alpha_modes=2):
         self.det_shape = tuple(np.array(det_shape) // binning)
         print('det_shape: ', self.det_shape)        
         self.binning = binning
@@ -38,7 +37,6 @@ class Signal():
         self.offset = self.det_shape[0]//2
         self.kscale_x = 2*np.pi/(self.det_shape[0]*4)
         self.efilter = efilter
-        self.full_frame = total
         self.num_modes = num_modes
         self.alpha_modes = alpha_modes
 
@@ -158,65 +156,52 @@ class Signal():
         kx2 = (1024//2-17)//self.binning
         kalpha1 = self.lorentzian(cp.arange(self.det_shape[1]), kx1, 1, 2.11/self.binning)  
         kalpha2 = self.lorentzian(cp.arange(self.det_shape[1]), kx2, 0.5, 2.17/self.binning)  
-        num_scatterer = np.array([self.num_photons//3*2, self.num_photons//3])
-        
+        klist = [kalpha1, kalpha2]
+        spectrum = kalpha1 + kalpha2
         diff_pattern = cp.zeros(self.det_shape)
-        #indices = cp.tile(cp.arange(self.num_photons)//self.num_modes, self.num_modes).reshape(self.num_modes, self.num_photons)
-        indices = cp.arange(self.num_photons)
-        cp.random.shuffle(indices)
-        indices = (indices[:num_scatterer[0]], indices[-num_scatterer[1]:])
-        alpha_indices = []
-        for i in range(2):
-            alpha_indices.append(cp.array(indices[i][:len(indices[i])//self.num_modes*self.num_modes]).reshape(self.num_modes, len(indices[i])//self.num_modes))
-        spec_mode_conv = cp.zeros(self.det_shape)
-        for k in range(self.alpha_modes):
-            if self.full_frame:
-                if self.incoherent:
-                    phases_rand = cp.array(cp.random.random(size=(self.num_modes, num_scatterer[k]//self.num_modes, self.det_shape[1]))*2*cp.pi)
-                else:
-                    phases_rand = cp.zeros((self.num_modes, num_scatterer[k]//self.num_modes, self.det_shape[1]))
+        if self.alpha_modes == 1:
+            num_scatterer = self.num_photons
+            indices = cp.tile(cp.arange(self.num_photons)//self.num_modes, self.num_modes).reshape(self.num_modes, self.num_photons)
 
+            cp.random.shuffle(indices.T)
+            if self.incoherent:
+                phases_rand = cp.array(cp.random.random(size=(self.num_modes, num_scatterer//self.num_modes))*2*cp.pi)
             else:
+                phases_rand = cp.zeros(self.num_modes, num_scatterer//self.num_modes)
+            r_k = cp.matmul(self.loc_scatterer[indices%len(self.loc_scatterer),cp.newaxis],self.kvector[cp.newaxis,:])
+            psi = cp.exp(1j*(r_k.transpose(2,0,1)+phases_rand)).sum(2).transpose(1,0)
+            psi2d = psi[:,:,cp.newaxis] * spectrum[cp.newaxis,:]
+            mode_int = cp.abs(psi2d)**2
+            int_tot = mode_int.sum(0)
+            int_tot /= int_tot.sum() / num_scatterer 
+
+        elif self.alpha_modes == 2:
+            num_scatterer = np.array([self.num_photons//3*2, self.num_photons//3])
+            indices = cp.arange(self.num_photons)
+            cp.random.shuffle(indices)
+            indices = (indices[:num_scatterer[0]], indices[-num_scatterer[1]:])
+            alpha_indices = []
+            int_tot = cp.zeros(self.det_shape)
+            for i in range(2):
+                alpha_indices.append(cp.array(indices[i][:len(indices[i])//self.num_modes*self.num_modes]).reshape(self.num_modes, len(indices[i])//self.num_modes))
+            for k in range(self.alpha_modes):
                 if self.incoherent:
                     phases_rand = cp.array(cp.random.random(size=(self.num_modes, num_scatterer[k]//self.num_modes))*2*cp.pi)
                 else:
                     phases_rand = cp.zeros(self.num_modes, num_scatterer[k]//self.num_modes)
-            r_k = cp.matmul(self.loc_scatterer[alpha_indices[k]%len(self.loc_scatterer),cp.newaxis],self.kvector[cp.newaxis,:])
+                r_k = cp.matmul(self.loc_scatterer[alpha_indices[k]%len(self.loc_scatterer),cp.newaxis],self.kvector[cp.newaxis,:])
 
-            if self.full_frame:
-                psi = cp.exp(1j*(r_k[:,:,:,np.newaxis].transpose(2,0,1,3)+phases_rand)).sum(2).transpose(1,0,2)
-            else:
                 psi = cp.exp(1j*(r_k.transpose(2,0,1)+phases_rand)).sum(2).transpose(1,0)
-            mode_int = cp.abs(psi)**2
-            int_tot = mode_int.sum(0)
-            
-            spec_mode = cp.zeros(self.det_shape)
-            if k == 0:
-                if self.full_frame:
-                    spec_mode = int_tot
-                else:
-                    spec_mode[:,kx1] = int_tot
-                if self.efilter:
-                    mode_conv = cusignal.fftconvolve(spec_mode, kalpha1[cp.newaxis,:], axes=1, mode='same')
-                else:
-                    mode_conv = spec_mode
-                spec_mode_conv += mode_conv / mode_conv.sum() * num_scatterer[k]
-            else:
-                if self.full_frame:
-                    spec_mode = int_tot
-                else:
-                    spec_mode[:,kx2] = int_tot
-                if self.efilter:
-                    mode_conv = cusignal.fftconvolve(spec_mode, kalpha2[cp.newaxis,:], axes=1, mode='same')
-                else:
-                     mode_conv = spec_mode
-                spec_mode_conv += mode_conv / mode_conv.sum() * num_scatterer[k]
-            
-            int_filter = cundimage.gaussian_filter(spec_mode_conv, sigma=(0,1.13//self.binning), mode='constant')
-            #int_filter = cundimage.gaussian_filter(spec_mode_conv, sigma=(0,0), mode='constant')
-            int_p = cp.random.poisson(cp.abs(int_filter),size=self.det_shape)
-            int_p *= self.adu_phot
-            diff_pattern += int_p
+                psi2d = psi[:,:,cp.newaxis] * klist[k][cp.newaxis,:]
+                mode_int = cp.abs(psi2d)**2
+                int_tot_k = mode_int.sum(0)
+                int_tot += int_tot_k
+            int_tot /= int_tot.sum() / np.sum(num_scatterer)
+
+        int_filter = cundimage.gaussian_filter(int_tot, sigma=(0,1.13//self.binning), mode='constant')
+        int_p = cp.random.poisson(cp.abs(int_filter),size=self.det_shape)
+        int_p *= self.adu_phot
+        diff_pattern += int_p
 
         gauss_noise = cp.random.normal(self.noise_level,2.5,self.det_shape)
         diff_pattern += gauss_noise
@@ -247,7 +232,6 @@ if __name__ == '__main__':
     lines = config.getboolean(section, 'lines', fallback=False)
     incoherent = config.getboolean(section, 'incoherent', fallback=True)
     efilter = config.getboolean(section, 'filter', fallback=True)
-    total = config.getboolean(section, 'full_frame', fallback=False)
     alpha = config.getint(section, 'alpha', fallback=2)
 
     det_shape = fshape
@@ -255,7 +239,7 @@ if __name__ == '__main__':
  
     sig = Signal(det_shape=det_shape, binning=binning, num_shots=num_shots, num_photons=num_photons, 
                  noise=noise, num_modes=modes, lines=lines, incoherent=incoherent,
-                 efilter=efilter, total=total, alpha_modes=alpha)
+                 efilter=efilter, alpha_modes=alpha)
     sig.create_sample()
     sig.sim_glob()
 
