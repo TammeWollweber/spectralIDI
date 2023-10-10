@@ -16,18 +16,19 @@ import multiprocessing as mp
 from scipy import signal
 from scipy import ndimage as ndi
 import h5py as h5
+import argparse
+import configparser
 import ctypes
 import cupy as cp
 from cupyx.scipy import signal as cusignal
 from cupyx.scipy import ndimage as cundimage
-import argparse
 plt.ion()
 
 NUM_DEV = 3
 JOBS_PER_DEV = 4
 
 class Signal():  
-    def __init__(self, det_shape=(1024,1024), binning=8, shots=1000, num_photons=50,
+    def __init__(self, det_shape=(1024,1024), binning=8, num_shots=1000, num_photons=50,
                  noise=60, num_modes=1, lines=True, incoherent=False, efilter=False,
                  total=False, alpha_modes=2):
         self.det_shape = tuple(np.array(det_shape) // binning)
@@ -46,7 +47,7 @@ class Signal():
         self.center = np.array(self.det_shape)//2 - 1
         self.hits = []
         self.hit_size = None
-        self.shots = shots 
+        self.num_shots = num_shots 
         self.num_scatterer = None
         self.loc_scatterer = None
         self.kvector = None
@@ -83,8 +84,8 @@ class Signal():
             self.run_num = len(flist)
             print(flist)
         print('Start simulation run {}.'.format(self.run_num))
-        print('Simulate {} shots.'.format(self.shots))
-        print('Save {} files.'.format(cp.ceil(self.shots/self.shots_per_file).astype(int)))
+        print('Simulate {} shots.'.format(self.num_shots))
+        print('Save {} files.'.format(cp.ceil(self.num_shots/self.shots_per_file).astype(int)))
 
     def _init_sim(self):
         self.loc_scatterer = cp.nonzero(cp.array(self.sample))[0] - cp.array(self.center[0])
@@ -130,7 +131,7 @@ class Signal():
         cp.cuda.Device(devnum).use()
 
         data_arr = mp.Array(ctypes.c_double, self.shots_per_file)
-        num_files = np.ceil(self.shots / self.shots_per_file).astype(int)
+        num_files = np.ceil(self.num_shots / self.shots_per_file).astype(int)
         stime = time.time()
         for i, _ in enumerate(np.arange(num_files)[rank::num_jobs]):
             idx = i*num_jobs+rank
@@ -227,30 +228,34 @@ class Signal():
        
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-s', '--size', nargs='+', type=int, help='det_shape',
-                        default=(1024, 1024))
-    parser.add_argument('-b', '--binning', type=int, default=8, help='binning 1024x1024 det')
-    parser.add_argument('-N', '--num_shots', type=int, default=1000)
-    parser.add_argument('-M', '--photon_density', type=float, default=0.03, help='Number of photons per pixel')
-    parser.add_argument('-o', '--noise', type=int, default=60, help='Noise level')
-    parser.add_argument('-n', '--num_photons', type=int, default=1000, help='Number of photons per shot')
-    parser.add_argument('-m', '--modes', type=int, default=30, help='Number of modes')
-    parser.add_argument('-l', '--lines', type=int, default=0, help='Sample shape')
-    parser.add_argument('-i', '--incoherent', type=int, default=1, help='Incoherent/coherent simulation')
-    parser.add_argument('-f', '--filter', type=int, default=0, help='Convolve energies')
-    parser.add_argument('-t', '--total', type=int, default=0, help='Populate full (total) detector')
-    parser.add_argument('-a', '--alpha', type=int, default=2, help='Number of kalpha modes')
-
+    parser = argparse.ArgumentParser(description='Simulate 1 spectral-IDI')
+    parser.add_argument('-c', '--config_fname', help='Config file',
+                        default='sim_config.ini')
+    parser.add_argument('-s', '--config_section', help='Section in config file (default: sim)', default='sim')
     args = parser.parse_args()
 
-    det_shape = tuple(args.size)
+    config = configparser.ConfigParser(interpolation=configparser.ExtendedInterpolation())
+    config.read(args.config_fname)
+    section = args.config_section
+
+    fshape = tuple([int(i) for i in config.get(section, 'frame_shape').split()])
+    binning = config.getint(section, 'binning', fallback=8)
+    num_photons = config.getint(section, 'num_photons', fallback=1000)
+    num_shots = config.getint(section, 'num_shots', fallback=1000)
+    noise = config.getint(section, 'noise', fallback=60)
+    modes= config.getint(section, 'modes', fallback=1)
+    lines = config.getboolean(section, 'lines', fallback=False)
+    incoherent = config.getboolean(section, 'incoherent', fallback=True)
+    efilter = config.getboolean(section, 'filter', fallback=True)
+    total = config.getboolean(section, 'full_frame', fallback=False)
+    alpha = config.getint(section, 'alpha', fallback=2)
+
+    det_shape = fshape
     #num_photons = np.ceil(args.photon_density * det_shape[0] * det_shape[1]).astype(int)
-    num_photons = args.num_photons
  
-    sig = Signal(det_shape=det_shape, binning=args.binning, shots=args.num_shots, num_photons=num_photons, 
-                 noise=args.noise, num_modes=args.modes, lines=args.lines, incoherent=args.incoherent,
-                 efilter=args.filter, total=args.total, alpha_modes=args.alpha)
+    sig = Signal(det_shape=det_shape, binning=binning, num_shots=num_shots, num_photons=num_photons, 
+                 noise=noise, num_modes=modes, lines=lines, incoherent=incoherent,
+                 efilter=efilter, total=total, alpha_modes=alpha)
     sig.create_sample()
     sig.sim_glob()
 
