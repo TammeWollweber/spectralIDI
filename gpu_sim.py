@@ -35,8 +35,7 @@ class Signal():
         self.binning = binning
         self.lines = lines
         self.offset = self.det_shape[0]//2
-        self.kscale_x = 2*np.pi/(self.det_shape[0]*4)
-        self.ind_scale = 1000
+        self.kscale_x = 2*np.pi/(self.det_shape[0])
         self.efilter = efilter
         self.num_modes = num_modes
         self.alpha_modes = alpha_modes
@@ -48,7 +47,6 @@ class Signal():
         self.hit_size = None
         self.num_shots = num_shots 
         self.num_scatterer = None
-        self.loc_scatterer = None
         self.kvector = None
         self.r_k = None
         
@@ -87,10 +85,6 @@ class Signal():
         print('Save {} files.'.format(cp.ceil(self.num_shots/self.shots_per_file).astype(int)))
 
     def _init_sim(self):
-        self.loc_scatterer = cp.nonzero(cp.array(self.sample))[0] - cp.array(self.center[0])
-        #min_val = cp.min(cp.nonzero(self.sample)[0] - self.center[0])
-        #max_val = cp.max(cp.nonzero(self.sample)[0] - self.center[0])
-        #self.loc_scatterer = cp.linspace(min_val, max_val, self.num_photons)
         self.kvector = np.arange(self.det_shape[0])
         self.kvector -= self.det_shape[0]//2
         self.kvector = self.kvector * self.kscale_x
@@ -161,23 +155,22 @@ class Signal():
         spectrum = kalpha1 + kalpha2
         diff_pattern = cp.zeros(self.det_shape)
         if self.alpha_modes == 1:
-            num_scatterer = self.num_photons
-            indices = cp.random.randint(0, self.ind_scale, size=(self.num_modes, self.num_photons//self.num_modes))
+            indices = cp.random.randint(0, self.size_emitter, size=(self.num_modes, self.num_photons//self.num_modes))
             if self.incoherent:
-                phases_rand = cp.array(cp.random.random(size=(self.num_modes, num_scatterer//self.num_modes))*2*cp.pi)
+                phases_rand = cp.array(cp.random.random(size=(self.num_modes, self.num_photons//self.num_modes))*2*cp.pi)
             else:
-                phases_rand = cp.zeros((self.num_modes, num_scatterer//self.num_modes))
-            r_k = cp.matmul(self.loc_scatterer[indices%len(self.loc_scatterer),cp.newaxis],self.kvector[cp.newaxis,:])
+                phases_rand = cp.zeros((self.num_modes, self.num_photons//self.num_modes))
+            r_k = cp.matmul(indices[:,:,cp.newaxis],self.kvector[cp.newaxis,:])
             psi = cp.exp(1j*(r_k.transpose(2,0,1)+phases_rand)).sum(2).transpose(1,0)
             psi2d = psi[:,:,cp.newaxis] * spectrum[cp.newaxis,:]
             mode_int = cp.abs(psi2d)**2
             int_tot = mode_int.sum(0)
-            int_tot /= int_tot.sum() / num_scatterer 
+            int_tot /= int_tot.sum() / self.num_photons
 
         elif self.alpha_modes == 2:
             num_scatterer = np.array([self.num_photons//3*2, self.num_photons//3])
-            ind1 = cp.random.randint(0, self.ind_scale, size=(self.num_modes, num_scatterer[0]//self.num_modes))
-            ind2 = cp.random.randint(0, self.ind_scale, size=(self.num_modes, num_scatterer[1]//self.num_modes))
+            ind1 = cp.random.randint(0, self.size_emitter, size=(self.num_modes, num_scatterer[0]//self.num_modes))
+            ind2 = cp.random.randint(0, self.size_emitter, size=(self.num_modes, num_scatterer[1]//self.num_modes))
             indices = (ind1, ind2)
             int_tot = cp.zeros(self.det_shape)
             for k in range(self.alpha_modes):
@@ -185,7 +178,7 @@ class Signal():
                     phases_rand = cp.array(cp.random.random(size=(self.num_modes, num_scatterer[k]//self.num_modes))*2*cp.pi)
                 else:
                     phases_rand = cp.zeros(self.num_modes, num_scatterer[k]//self.num_modes)
-                r_k = cp.matmul(self.loc_scatterer[indices[k]%len(self.loc_scatterer),cp.newaxis],self.kvector[cp.newaxis,:])
+                r_k = cp.matmul(indices[k][:,:,cp.newaxis],self.kvector[cp.newaxis,:])
 
                 psi = cp.exp(1j*(r_k.transpose(2,0,1)+phases_rand)).sum(2).transpose(1,0)
                 psi2d = psi[:,:,cp.newaxis] * klist[k][cp.newaxis,:]
