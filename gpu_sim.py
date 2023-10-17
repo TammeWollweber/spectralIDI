@@ -50,7 +50,8 @@ class Signal():
         self.num_scatterer = None
         self.kvector = None
         self.r_k = None
-        
+        self.beat_period = 413 #attoseconds
+        self.mode_period = 555 #attoseconds
         self.adu_phot = 160
         self.fft = None
         self.corr_list = []
@@ -163,22 +164,19 @@ class Signal():
         num_modes = len(pop)
 
         diff_pattern = cp.zeros(self.det_shape)
+        r_k = cp.matmul(cp.arange(self.size_emitter)[:,cp.newaxis],self.kvector[cp.newaxis,:])
         if self.alpha_modes == 1:
             if self.incoherent:
                 phases_rand = cp.array(cp.random.random(size=(num_modes, self.size_emitter))*2*cp.pi)
             else:
                 phases_rand = cp.zeros((num_modes, self.size_emitter))
-            r_k = cp.matmul(cp.arange(self.size_emitter)[:,cp.newaxis],self.kvector[cp.newaxis,:])
             psi = cp.exp(1j*(r_k[:,:,cp.newaxis].transpose(1,2,0)+phases_rand)).sum(2)
             psi *= pop / pop_max
-            psi2d = psi[:,:,cp.newaxis] * spectrum[cp.newaxis,:]
-            mode_int = cp.abs(psi2d.transpose(1,0,2))**2
+            psi2d = (psi[:,:,cp.newaxis] * spectrum[cp.newaxis,:]).transpose(1,0,2)
+            mode_int = cp.abs(psi2d)**2
             int_tot = mode_int.sum(0)
 
         elif self.alpha_modes == 2:
-            k_factor = cp.array([2/3, 1/3])
-            int_tot = cp.zeros(self.det_shape)
-            r_k = cp.matmul(cp.arange(self.size_emitter)[:,cp.newaxis], self.kvector[cp.newaxis,:])
             if self.incoherent:
                 phases_rand = cp.array(cp.random.random(size=(2, num_modes, self.size_emitter))*2*cp.pi)
             else:
@@ -189,6 +187,21 @@ class Signal():
             psi2d = (psi.transpose(2,0,1)[:,:,:,cp.newaxis] * kspec[cp.newaxis,:,:]).transpose(0,1,3,2)
             mode_int = cp.abs(psi2d)**2
             int_tot = mode_int.sum(0).sum(-1)
+        
+        elif self.alpha_modes == 3:
+            if self.incoherent:
+                phases_rand = cp.array(cp.random.random(size=(2, num_modes, self.size_emitter))*2*cp.pi)
+            else:
+                phases_rand = cp.zeros((2, num_modes, self.size_emitter))
+
+            psi = cp.exp(1j*(r_k[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_rand)).sum(-1)
+            psi *= pop / pop_max
+            beat_phases = (cp.arange(num_modes) * self.mode_period/self.beat_period * 2*cp.pi) % (2*cp.pi)
+            psi2d = (psi.transpose(2,0,1)[:,:,:,cp.newaxis] * kspec[cp.newaxis,:,:]).transpose(0,1,3,2)
+            psi2d_beat = psi2d[:,:,:,0] + (psi2d[:,:,:,1].T * cp.exp(1j*beat_phases)).T
+            mode_int = cp.abs(psi2d_beat)**2
+            int_tot = mode_int.sum(0)
+
 
         int_tot /= int_tot.sum() / self.num_photons
         int_filter = cundimage.gaussian_filter(int_tot, sigma=(0,1.13//self.binning), mode='constant')
