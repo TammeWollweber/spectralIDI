@@ -24,7 +24,7 @@ from cupyx.scipy import signal as cusignal
 from cupyx.scipy import ndimage as cundimage
 plt.ion()
 
-NUM_DEV = 3
+NUM_DEV = 3 
 JOBS_PER_DEV = 4
 
 class Signal():  
@@ -39,6 +39,7 @@ class Signal():
         self.efilter = efilter
         self.num_modes = num_modes
         self.alpha_modes = alpha_modes
+        self.num_photons = num_photons
 
         self.size_emitter = 10
         self.sample = None
@@ -54,6 +55,7 @@ class Signal():
         self.fft = None
         self.corr_list = []
         self.noise_level = noise
+        self.background = np.round(10*self.num_photons).astype(int) #percentage of num_photons
         
         self.shots_per_file = 1000
         self.file_per_run_counter = 0
@@ -62,7 +64,6 @@ class Signal():
         self.exp = None
         self.dir = '/mpsd/cni/processed/wittetam/sim/raw/'
         self._init_directory()
-        self.num_photons = num_photons
         self.num_cores = None
         self.integrated_signal = None
 
@@ -102,6 +103,9 @@ class Signal():
             
     def lorentzian(self, x, x0, a, gam):
         return a * gam**2 / (gam**2 + (x-x0)**2)
+
+    def gaussian(self, x, a, mu, sig):
+        return a/(sig*cp.sqrt(2*cp.pi)) * cp.exp(-(x-mu)**2/(2*sig**2))
  
     def sim_glob(self):
         self.file_per_run_counter = 0
@@ -140,65 +144,81 @@ class Signal():
         num_jobs = NUM_DEV * JOBS_PER_DEV
         n = 0
         while n < self.shots_per_file:
-            diff_pattern = self._sim_frame()
+            diff_pattern = self._sim_frame(counter+n)
             if counter % num_jobs == 0:
                 sys.stderr.write('\r%s: %d'%(counter, n))
             data[n] = diff_pattern
             n += 1
         
-    def _sim_frame(self):
+    def _sim_frame(self, counter):
         kx1 = (1024//2+16)//self.binning
         kx2 = (1024//2-17)//self.binning
         kalpha1 = self.lorentzian(cp.arange(self.det_shape[1]), kx1, 1, 2.11/self.binning)  
         kalpha2 = self.lorentzian(cp.arange(self.det_shape[1]), kx2, 0.5, 2.17/self.binning)  
-        klist = [kalpha1, kalpha2]
+        kspec = cp.array([kalpha1, kalpha2])
         spectrum = kalpha1 + kalpha2
+        
+        pop = self.calc_beam_profile(counter)
+        pop_max = cp.round(pop.max()).astype(int)
+        num_modes = len(pop)
+
         diff_pattern = cp.zeros(self.det_shape)
         if self.alpha_modes == 1:
-            indices = cp.random.randint(0, self.size_emitter, size=(self.num_modes, self.num_photons//self.num_modes))
             if self.incoherent:
-                phases_rand = cp.array(cp.random.random(size=(self.num_modes, self.num_photons//self.num_modes))*2*cp.pi)
+                phases_rand = cp.array(cp.random.random(size=(num_modes, self.size_emitter))*2*cp.pi)
             else:
-                phases_rand = cp.zeros((self.num_modes, self.num_photons//self.num_modes))
-            r_k = cp.matmul(indices[:,:,cp.newaxis],self.kvector[cp.newaxis,:])
-            psi = cp.exp(1j*(r_k.transpose(2,0,1)+phases_rand)).sum(2).transpose(1,0)
+                phases_rand = cp.zeros((num_modes, self.size_emitter))
+            r_k = cp.matmul(cp.arange(self.size_emitter)[:,cp.newaxis],self.kvector[cp.newaxis,:])
+            psi = cp.exp(1j*(r_k[:,:,cp.newaxis].transpose(1,2,0)+phases_rand)).sum(2)
+            psi *= pop / pop_max
             psi2d = psi[:,:,cp.newaxis] * spectrum[cp.newaxis,:]
-            mode_int = cp.abs(psi2d)**2
+            mode_int = cp.abs(psi2d.transpose(1,0,2))**2
             int_tot = mode_int.sum(0)
-            int_tot /= int_tot.sum() / self.num_photons
 
         elif self.alpha_modes == 2:
-            num_scatterer = np.array([self.num_photons//3*2, self.num_photons//3])
-            ind1 = cp.random.randint(0, self.size_emitter, size=(self.num_modes, num_scatterer[0]//self.num_modes))
-            ind2 = cp.random.randint(0, self.size_emitter, size=(self.num_modes, num_scatterer[1]//self.num_modes))
-            indices = (ind1, ind2)
+            k_factor = cp.array([2/3, 1/3])
             int_tot = cp.zeros(self.det_shape)
-            for k in range(self.alpha_modes):
-                if self.incoherent:
-                    phases_rand = cp.array(cp.random.random(size=(self.num_modes, num_scatterer[k]//self.num_modes))*2*cp.pi)
-                else:
-                    phases_rand = cp.zeros(self.num_modes, num_scatterer[k]//self.num_modes)
-                r_k = cp.matmul(indices[k][:,:,cp.newaxis],self.kvector[cp.newaxis,:])
+            r_k = cp.matmul(cp.arange(self.size_emitter)[:,cp.newaxis], self.kvector[cp.newaxis,:])
+            if self.incoherent:
+                phases_rand = cp.array(cp.random.random(size=(2, num_modes, self.size_emitter))*2*cp.pi)
+            else:
+                phases_rand = cp.zeros((2, num_modes, self.size_emitter))
 
-                psi = cp.exp(1j*(r_k.transpose(2,0,1)+phases_rand)).sum(2).transpose(1,0)
-                psi2d = psi[:,:,cp.newaxis] * klist[k][cp.newaxis,:]
-                mode_int = cp.abs(psi2d)**2
-                int_tot_k = mode_int.sum(0)
-                int_tot += int_tot_k
-            int_tot /= int_tot.sum() / np.sum(num_scatterer)
+            psi = cp.exp(1j*(r_k[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_rand)).sum(-1)
+            psi *= pop / pop_max
+            psi2d = (psi.transpose(2,0,1)[:,:,:,cp.newaxis] * kspec[cp.newaxis,:,:]).transpose(0,1,3,2)
+            mode_int = cp.abs(psi2d)**2
+            int_tot = mode_int.sum(0).sum(-1)
 
+        int_tot /= int_tot.sum() / self.num_photons
         int_filter = cundimage.gaussian_filter(int_tot, sigma=(0,1.13//self.binning), mode='constant')
         int_p = cp.random.poisson(cp.abs(int_filter),size=self.det_shape)
         int_p *= self.adu_phot
         diff_pattern += int_p
+        #bg = cp.random.randint(0, diff_pattern.size, self.background)
+        #diff_pattern.ravel()[bg] += self.adu_phot
 
-        gauss_noise = cp.random.normal(self.noise_level,2.5,self.det_shape)
-        diff_pattern += gauss_noise
+        #gauss_noise = cp.random.normal(self.noise_level,2.5,self.det_shape)
+        
+        #diff_pattern += gauss_noise
         return diff_pattern
+
+    def calc_beam_profile(self, counter):
+        x = cp.arange(-1e4, 1e4, 555) #555 is 6.1/11 (FWHM/num_modes without polarization)
+        y = self.num_photons * self.gaussian(x, 555, 0, 2596) #2596 is 6.1/2.35
+        shot_noise = cp.random.uniform(-0.8, 0.8, len(y))
+        y_noise = cp.round(y + shot_noise * y).astype(int)
+        mask = cp.zeros_like(y_noise)
+        mask[y_noise>=4] = 1 #at least 4 photons per mode, so 2 for each polarization
+        y_final = (y_noise * mask)//2
+        #cp.save('beam_profile_{}.npy'.format(counter), y_noise)
+        y_final = y_final[y_final!=0]
+        return cp.repeat(y_final,2)
+
 
     def save_file(self, data, counter):
         dpath = self.dir + '{}/'.format(self.exp)
-        np.ndarray.tofile((data.get()/100).astype('u2'), dpath+'Run{}_{:04d}.npy'.format(self.run_num,counter))
+        np.ndarray.tofile((data.get()).astype('u2'), dpath+'Run{}_{:04d}.npy'.format(self.run_num,counter))
        
 
 if __name__ == '__main__':
