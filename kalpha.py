@@ -29,21 +29,19 @@ JOBS_PER_DEV = 4
 
 class Signal():  
     def __init__(self, det_shape=(1024,1024), binning=8, num_shots=1000, num_photons=50,
-                 noise=60, num_modes=1, lines=True, incoherent=False, efilter=False, alpha_modes=2):
+                 noise=60, incoherent=False, efilter=False, alpha_modes=2, det_dist=4, pixel_size=100):
         self.det_shape = tuple(np.array(det_shape) // binning)
         print('det_shape: ', self.det_shape)        
         self.binning = binning
-        self.lines = lines
         self.offset = self.det_shape[0]//2
-        self.kscale_x = 2*np.pi/(self.det_shape[0])
+        self.det_distance = det_dist
+        self.pixel_size = pixel_size*1e-6
         self.efilter = efilter
-        self.num_modes = num_modes
         self.alpha_modes = alpha_modes
         self.num_photons = num_photons
 
         self.size_emitter = 10
         self.sample = None
-        self.center = np.array(self.det_shape)//2 - 1
         self.hits = []
         self.hit_size = None
         self.num_shots = num_shots 
@@ -51,7 +49,7 @@ class Signal():
         self.kvector = None
         self.r_k = None
         self.beat_period = 413 #attoseconds
-        self.mode_period = 555 #attoseconds
+        self.mode_period = 564 #attoseconds
         self.adu_phot = 160
         self.fft = None
         self.corr_list = []
@@ -87,20 +85,25 @@ class Signal():
         print('Save {} files.'.format(cp.ceil(self.num_shots/self.shots_per_file).astype(int)))
 
     def _init_sim(self):
-        self.kvector = np.arange(self.det_shape[0])
-        self.kvector -= self.det_shape[0]//2
-        self.kvector = self.kvector * self.kscale_x
-        self.kvector = cp.array(self.kvector)
+        e_sep = 8047-8027
+        e_center = np.round((8047+8027)/2).astype(int)
+        self.pix_sep = self.det_distance * np.tan((53.55-53.36)*cp.pi/180) / self.pixel_size
+        self.xka2 = self.det_shape[1]//2 - self.pix_sep//2
+        self.xka1 = self.det_shape[1]//2 + self.pix_sep//2
+        self.e_res = (e_sep)/np.round(self.pix_sep)
+        e_range = np.round(self.det_shape[1] * self.e_res).astype(int)
+        kvec = np.arange(self.det_shape[0])
+        kvec -= self.det_shape[0]//2
+        kscale_1d = 2 * np.pi / self.det_shape[0]
+        kscale_corr = 2 * np.pi * (np.arange(self.det_shape[1])-self.det_shape[1]//2) * self.e_res/e_center
+        kscale_2d = kscale_1d * kscale_corr + kscale_1d
+        self.kvector = cp.outer(cp.array(kvec), cp.array(kscale_2d)).T
+        self.sample = cp.array(self.sample)
 
     def create_sample(self):
-        self.sample = cp.zeros(self.det_shape)
-        if self.lines:
-            self.sample[30:40, 30:80] = 1
-            self.sample[50:60, 30:80] = 1
-            self.sample[70:80, 30:80] = 1
-        else:
-            half_size = int(self.size_emitter/2)
-            self.sample[(self.offset-half_size):(self.offset+half_size),(self.offset-half_size):(self.offset+half_size)] = 1
+        self.sample = np.zeros(self.det_shape)
+        half_size = int(self.size_emitter/2)
+        self.sample[(self.offset-half_size):(self.offset+half_size),(self.offset-half_size):(self.offset+half_size)] = 1
             
     def lorentzian(self, x, x0, a, gam):
         return a * gam**2 / (gam**2 + (x-x0)**2)
@@ -152,10 +155,8 @@ class Signal():
             n += 1
         
     def _sim_frame(self, counter):
-        kx1 = (1024//2+16)//self.binning
-        kx2 = (1024//2-17)//self.binning
-        kalpha1 = self.lorentzian(cp.arange(self.det_shape[1]), kx1, 1, 2.11/self.binning)  
-        kalpha2 = self.lorentzian(cp.arange(self.det_shape[1]), kx2, 0.5, 2.17/self.binning)  
+        kalpha1 = self.lorentzian(cp.arange(self.det_shape[1]), self.xka1, 1, 2.11/self.e_res)  
+        kalpha2 = self.lorentzian(cp.arange(self.det_shape[1]), self.xka2, 0.5, 2.17/self.e_res)  
         kspec = cp.array([kalpha1, kalpha2])
         spectrum = kalpha1 + kalpha2
         
@@ -164,38 +165,26 @@ class Signal():
         num_modes = len(pop)
 
         diff_pattern = cp.zeros(self.det_shape)
-        r_k = cp.matmul(cp.arange(self.size_emitter)[:,cp.newaxis],self.kvector[cp.newaxis,:])
+        indices = cp.tile(cp.nonzero(self.sample)[0], (self.kvector.shape[0],1)).T
+        r_k = cp.matmul(indices,self.kvector)/indices.shape[-1]
+        if self.incoherent:
+            phases_rand = cp.array(cp.random.random(size=(2, num_modes, indices.shape[0]))*2*cp.pi)
+        else:
+            phases_rand = cp.zeros((2, num_modes, indices.shape[0]))
+        psi = cp.exp(1j*(r_k[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_rand)).sum(-1)
+        psi *= pop / pop_max
+        
         if self.alpha_modes == 1:
-            if self.incoherent:
-                phases_rand = cp.array(cp.random.random(size=(num_modes, self.size_emitter))*2*cp.pi)
-            else:
-                phases_rand = cp.zeros((num_modes, self.size_emitter))
-            psi = cp.exp(1j*(r_k[:,:,cp.newaxis].transpose(1,2,0)+phases_rand)).sum(2)
-            psi *= pop / pop_max
-            psi2d = (psi[:,:,cp.newaxis] * spectrum[cp.newaxis,:]).transpose(1,0,2)
+            psi2d = (psi.transpose(2,0,1)[:,:,:,cp.newaxis] * kspec[cp.newaxis,:,:]).transpose(0,1,3,2).sum(-1)
             mode_int = cp.abs(psi2d)**2
             int_tot = mode_int.sum(0)
 
         elif self.alpha_modes == 2:
-            if self.incoherent:
-                phases_rand = cp.array(cp.random.random(size=(2, num_modes, self.size_emitter))*2*cp.pi)
-            else:
-                phases_rand = cp.zeros((2, num_modes, self.size_emitter))
-
-            psi = cp.exp(1j*(r_k[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_rand)).sum(-1)
-            psi *= pop / pop_max
             psi2d = (psi.transpose(2,0,1)[:,:,:,cp.newaxis] * kspec[cp.newaxis,:,:]).transpose(0,1,3,2)
             mode_int = cp.abs(psi2d)**2
             int_tot = mode_int.sum(0).sum(-1)
         
         elif self.alpha_modes == 3:
-            if self.incoherent:
-                phases_rand = cp.array(cp.random.random(size=(2, num_modes, self.size_emitter))*2*cp.pi)
-            else:
-                phases_rand = cp.zeros((2, num_modes, self.size_emitter))
-
-            psi = cp.exp(1j*(r_k[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_rand)).sum(-1)
-            psi *= pop / pop_max
             beat_phases = (cp.arange(num_modes) * self.mode_period/self.beat_period * 2*cp.pi) % (2*cp.pi)
             psi2d = (psi.transpose(2,0,1)[:,:,:,cp.newaxis] * kspec[cp.newaxis,:,:]).transpose(0,1,3,2)
             psi2d_beat = psi2d[:,:,:,0] + (psi2d[:,:,:,1].T * cp.exp(1j*beat_phases)).T
@@ -250,18 +239,17 @@ if __name__ == '__main__':
     num_photons = config.getint(section, 'num_photons', fallback=1000)
     num_shots = config.getint(section, 'num_shots', fallback=1000)
     noise = config.getint(section, 'noise', fallback=60)
-    modes= config.getint(section, 'modes', fallback=1)
-    lines = config.getboolean(section, 'lines', fallback=False)
     incoherent = config.getboolean(section, 'incoherent', fallback=True)
     efilter = config.getboolean(section, 'filter', fallback=True)
     alpha = config.getint(section, 'alpha', fallback=2)
+    det_dist = config.getint(section, 'det_dist', fallback=4)
+    pixel_size = config.getint(section, 'pixel_size', fallback=100)
 
     det_shape = fshape
     #num_photons = np.ceil(args.photon_density * det_shape[0] * det_shape[1]).astype(int)
  
     sig = Signal(det_shape=det_shape, binning=binning, num_shots=num_shots, num_photons=num_photons, 
-                 noise=noise, num_modes=modes, lines=lines, incoherent=incoherent,
-                 efilter=efilter, alpha_modes=alpha)
+                 noise=noise, incoherent=incoherent, efilter=efilter, alpha_modes=alpha, det_dist=det_dist, pixel_size=pixel_size)
     sig.create_sample()
     sig.sim_glob()
 

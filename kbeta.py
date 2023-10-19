@@ -43,7 +43,6 @@ class Signal():
         self.size_em1 = 10
         self.size_em2 = 10
         self.sample = None
-        self.center = np.array(self.det_shape)//2 - 1
         self.hits = []
         self.hit_size = None
         self.num_shots = num_shots 
@@ -88,23 +87,22 @@ class Signal():
     def _init_sim(self):
         e_sep = 9000-8905
         e_center = np.round((9000+8905)/2).astype(int)
-        pix_sep = self.det_distance * np.tan((46.48-45.85)*np.pi/180) / self.pixel_size
-        self.e_res = (e_sep)/np.round(pix_sep)
+        self.pix_sep = self.det_distance * np.tan((46.48-45.85)*cp.pi/180) / self.pixel_size
+        self.xkb = self.det_shape[1]//2 - self.pix_sep//2
+        self.xkel = self.det_shape[1]//2 + self.pix_sep//2
+        self.e_res = (e_sep)/np.round(self.pix_sep)
         e_range = np.round(self.det_shape[1] * self.e_res).astype(int)
-        self.kx1 = self.det_shape[1]//2 - pix_sep//2
-        self.kx2 = self.det_shape[1]//2 + pix_sep//2
-        kvec = cp.arange(self.det_shape[0])
+        kvec = np.arange(self.det_shape[0])
         kvec -= self.det_shape[0]//2
-        kscale_1d = 2 * cp.pi / self.det_shape[0]
-        kscale_corr = 2 * cp.pi * (cp.arange(self.det_shape[1])-self.det_shape[1]//2) * self.e_res/e_center
+        kscale_1d = 2 * np.pi / self.det_shape[0]
+        kscale_corr = 2 * np.pi * (np.arange(self.det_shape[1])-self.det_shape[1]//2) * self.e_res/e_center
         kscale_2d = kscale_1d * kscale_corr + kscale_1d
-        
-        self.kvector = kvec * kscale_1d
-        self.kvector2d = cp.outer(kvec, kscale)
+        self.kvector = cp.outer(cp.array(kvec), cp.array(kscale_2d)).T
+        self.sample = cp.array(self.sample)
 
     def create_sample(self):
-        self.sample = cp.zeros(self.det_shape)
-        self.sample[(self.offset-self.size_em2):(self.offset+self.size_em2),(self.offset-self.size_em2):(self.offset+self.size_em2)] = 1
+        self.sample = np.zeros(self.det_shape)
+        #self.sample[(self.offset-self.size_em2):(self.offset+self.size_em2),(self.offset-self.size_em2):(self.offset+self.size_em2)] = 1
         self.sample[(self.offset-self.size_em1//2):(self.offset+self.size_em1//2),(self.offset-self.size_em1//2):(self.offset+self.size_em1//2)] += 1
             
     def lorentzian(self, x, x0, a, gam):
@@ -157,8 +155,8 @@ class Signal():
             n += 1
         
     def _sim_frame(self, counter):
-        kbeta1 = self.lorentzian(cp.arange(self.det_shape[1]), self.kx1, 1, 3.7/self.e_res)  
-        elastic = self.lorentzian(cp.arange(self.det_shape[1]), self.kx2, 1, 9/self.e_res)  
+        kbeta1 = self.lorentzian(cp.arange(self.det_shape[1]), self.xkb, 1, 3.7/self.e_res)  
+        elastic = self.lorentzian(cp.arange(self.det_shape[1]), self.xkel, 0.1, 9/self.e_res)  
         kspec = cp.array([kbeta1, elastic])
         spectrum = kbeta1 + elastic
         
@@ -167,10 +165,10 @@ class Signal():
         num_modes = len(pop)
 
         diff_pattern = cp.zeros(self.det_shape)
-        indices = np.nonzero(self.sample)[0]
-        r_k = cp.matmul(indices[:,cp.newaxis],self.kvector[cp.newaxis,:])
-        phases_fl = cp.array(cp.random.random(size=(1, num_modes, self.size_emitter))*2*cp.pi)
-        phases_el = cp.zeros((1, num_modes, self.size_emitter))
+        indices = cp.tile(cp.nonzero(self.sample)[0], (self.kvector.shape[0],1)).T
+        r_k = cp.matmul(indices,self.kvector)/indices.shape[-1]
+        phases_fl = cp.array(cp.random.random(size=(1, num_modes, indices.shape[0]))*2*cp.pi)
+        phases_el = cp.zeros((1, num_modes, indices.shape[0]))
         phases_rand = cp.concatenate((phases_fl, phases_el))
         psi = cp.exp(1j*(r_k[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_rand)).sum(-1)
         psi *= pop / pop_max
