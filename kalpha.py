@@ -157,8 +157,8 @@ class Signal():
     def _sim_frame(self, counter):
         kalpha1 = self.lorentzian(cp.arange(self.det_shape[1]), self.xka1, 1, 2.11/self.e_res)  
         kalpha2 = self.lorentzian(cp.arange(self.det_shape[1]), self.xka2, 0.5, 2.17/self.e_res)  
-        kspec = cp.array([kalpha1, kalpha2])
-        spectrum = kalpha1 + kalpha2
+        kspec = cp.sqrt(cp.array([kalpha1, kalpha2]))
+        spectrum = cp.sqrt(kalpha1 + kalpha2)
         
         pop = self.calc_beam_profile(counter)
         pop_max = cp.round(pop.max()).astype(int)
@@ -172,10 +172,10 @@ class Signal():
         else:
             phases_rand = cp.zeros((2, num_modes, indices.shape[0]))
         psi = cp.exp(1j*(r_k[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_rand)).sum(-1)
-        psi *= pop / pop_max
-        
+        psi *= (pop / pop_max)/2
+
         if self.alpha_modes == 1:
-            psi2d = (psi.transpose(2,0,1)[:,:,:,cp.newaxis] * kspec[cp.newaxis,:,:]).transpose(0,1,3,2).sum(-1)
+            psi2d = (psi.sum(1)[:,:,np.newaxis] * spectrum[np.newaxis,:]).transpose(1,0,2)
             mode_int = cp.abs(psi2d)**2
             int_tot = mode_int.sum(0)
 
@@ -186,7 +186,7 @@ class Signal():
         
         elif self.alpha_modes == 3:
             beat_phases = (cp.arange(num_modes) * self.mode_period/self.beat_period * 2*cp.pi) % (2*cp.pi)
-            psi2d = (psi.transpose(2,0,1)[:,:,:,cp.newaxis] * kspec[cp.newaxis,:,:]).transpose(0,1,3,2)
+            psi2d = (psi.transpose(2,0,1)[:,:,:,cp.newaxis] * cp.tile(spectrum,(2,1))[cp.newaxis,:,:]).transpose(0,1,3,2)
             psi2d_beat = psi2d[:,:,:,0] + (psi2d[:,:,:,1].T * cp.exp(1j*beat_phases)).T
             mode_int = cp.abs(psi2d_beat)**2
             int_tot = mode_int.sum(0)
@@ -206,8 +206,8 @@ class Signal():
         return diff_pattern
 
     def calc_beam_profile(self, counter):
-        x = cp.arange(-1e4, 1e4, 555) #555 is 6.1/11 (FWHM/num_modes without polarization)
-        y = self.num_photons * self.gaussian(x, 555, 0, 2596) #2596 is 6.1/2.35
+        x = cp.arange(-1e4, 1e4, self.mode_period) #555 is 6.1/11 (FWHM/num_modes without polarization)
+        y = self.num_photons * self.gaussian(x, self.mode_period, 0, 2596) #2596 is 6.1/2.35
         shot_noise = cp.random.uniform(-0.8, 0.8, len(y))
         y_noise = cp.round(y + shot_noise * y).astype(int)
         mask = cp.zeros_like(y_noise)
