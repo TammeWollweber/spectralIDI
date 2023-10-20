@@ -102,7 +102,7 @@ class Signal():
 
     def create_sample(self):
         self.sample = np.zeros(self.det_shape)
-        #self.sample[(self.offset-self.size_em2):(self.offset+self.size_em2),(self.offset-self.size_em2):(self.offset+self.size_em2)] = 1
+        self.sample[(self.offset-self.size_em2):(self.offset+self.size_em2),(self.offset-self.size_em2):(self.offset+self.size_em2)] = 1
         self.sample[(self.offset-self.size_em1//2):(self.offset+self.size_em1//2),(self.offset-self.size_em1//2):(self.offset+self.size_em1//2)] += 1
             
     def lorentzian(self, x, x0, a, gam):
@@ -155,37 +155,47 @@ class Signal():
             n += 1
         
     def _sim_frame(self, counter):
-        kbeta1 = self.lorentzian(cp.arange(self.det_shape[1]), self.xkb, 1, 3.7/self.e_res)  
-        elastic = self.lorentzian(cp.arange(self.det_shape[1]), self.xkel, 0.1, 9/self.e_res)  
-        kspec = cp.array([kbeta1, elastic])
-        spectrum = kbeta1 + elastic
+        kbeta = cp.sqrt(self.lorentzian(cp.arange(self.det_shape[1]), self.xkb, 1, 3.7/self.e_res))  
+        elastic = cp.sqrt(self.lorentzian(cp.arange(self.det_shape[1]), self.xkel, 0.2, 9/self.e_res))
+        kspec = cp.array([kbeta, elastic])
+        spectrum = kbeta + elastic
         
         pop = self.calc_beam_profile(counter)
         pop_max = cp.round(pop.max()).astype(int)
         num_modes = len(pop)
 
         diff_pattern = cp.zeros(self.det_shape)
-        indices = cp.tile(cp.nonzero(self.sample)[0], (self.kvector.shape[0],1)).T
-        r_k = cp.matmul(indices,self.kvector)/indices.shape[-1]
-        phases_fl = cp.array(cp.random.random(size=(1, num_modes, indices.shape[0]))*2*cp.pi)
-        phases_el = cp.zeros((1, num_modes, indices.shape[0]))
-        phases_rand = cp.concatenate((phases_fl, phases_el))
-        psi = cp.exp(1j*(r_k[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_rand)).sum(-1)
-        psi *= pop / pop_max
+        num_scatterer = len(cp.where(self.sample!=0)[0])
+        ind1 = cp.tile(cp.where(self.sample==1)[0], (self.kvector.shape[0],1)).T
+        ind2 = cp.tile(cp.where(self.sample==2)[0], (self.kvector.shape[0],1)).T
+        r_k1 = cp.matmul(ind1,self.kvector)/ind1.shape[-1]
+        r_k2 = cp.matmul(ind2,self.kvector)/ind2.shape[-1]
+        phases_fl1 = cp.array(cp.random.random(size=(1, num_modes, ind1.shape[0]))*2*cp.pi)
+        phases_fl2 = cp.array(cp.random.random(size=(1, num_modes, ind2.shape[0]))*2*cp.pi)
+        phases_el = cp.zeros((1, num_modes, ind2.shape[0]))
+        psi1_fl = cp.exp(1j*(r_k1[:,:,cp.newaxis].transpose(1,2,0)+phases_fl1)).sum(-1)
+        psi2_fl = cp.exp(1j*(r_k2[:,:,cp.newaxis].transpose(1,2,0)+phases_fl2)).sum(-1)
+        psi_el = cp.exp(1j*(r_k2[:,:,cp.newaxis].transpose(1,2,0)+phases_el)).sum(-1)
+        psi1_fl *= (pop / pop_max) * ind1.shape[0]/num_scatterer
+        psi2_fl *= (pop / pop_max) * ind2.shape[0]/num_scatterer
+        psi_el *= pop / pop_max
+        psi2d_fl = (psi1_fl.transpose(1,0)[:,:,cp.newaxis] * kbeta[cp.newaxis,:])
+        psi2d_fl *= (psi2_fl.transpose(1,0)[:,:,cp.newaxis] * kbeta[cp.newaxis,:])
+        psi2d_el = (psi_el.transpose(1,0)[:,:,cp.newaxis] * elastic[cp.newaxis,:])
         if self.alpha_modes == 1:
-            psi2d = (psi.transpose(2,0,1)[:,:,:,cp.newaxis] * kspec[cp.newaxis,:,:]).transpose(0,1,3,2).sum(-1)
+            psi2d = psi2d_fl + psi2d_el
             mode_int = cp.abs(psi2d)**2
             int_tot = mode_int.sum(0)
 
         elif self.alpha_modes == 2:
-            psi2d = (psi.transpose(2,0,1)[:,:,:,cp.newaxis] * kspec[cp.newaxis,:,:]).transpose(0,1,3,2)
-            mode_int = cp.abs(psi2d)**2
-            int_tot = mode_int.sum(0).sum(-1)
+            int_fl = cp.abs(psi2d_fl)**2
+            int_el = cp.abs(psi2d_el)**2
+            mode_int = int_fl + int_el
+            int_tot = mode_int.sum(0)
         
         elif self.alpha_modes == 3:
             beat_phases = (cp.arange(num_modes) * self.mode_period/self.beat_period * 2*cp.pi) % (2*cp.pi)
-            psi2d = (psi.transpose(2,0,1)[:,:,:,cp.newaxis] * kspec[cp.newaxis,:,:]).transpose(0,1,3,2)
-            psi2d_beat = psi2d[:,:,:,0] + (psi2d[:,:,:,1].T * cp.exp(1j*beat_phases)).T
+            psi2d_beat = psi2d_fl + (psi2d_el.T * cp.exp(1j*beat_phases)).T
             mode_int = cp.abs(psi2d_beat)**2
             int_tot = mode_int.sum(0)
 
