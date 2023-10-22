@@ -85,12 +85,21 @@ class Signal():
         print('Save {} files.'.format(cp.ceil(self.num_shots/self.shots_per_file).astype(int)))
 
     def _init_sim(self):
-        e_sep = 9000-8905
-        e_center = np.round((9000+8905)/2).astype(int)
-        self.pix_sep = self.det_distance * np.tan((46.48-45.85)*cp.pi/180) / self.pixel_size
-        self.xkb = self.det_shape[1]//2 - self.pix_sep//2
-        self.xkel = self.det_shape[1]//2 + self.pix_sep//2
+        #e_sep = 9000-8905 #main kbeta line but does not change with oxidation I assume
+        e1 = 8975 #kbeta_2,5 Cu
+        e2 = 8985 #kbeta_2,5 Cu1+
+        e3 = 9000 #elastic 
+        phi1 = 46.01
+        phi2 = 45.95
+        phi3 = 45.85
+        e_sep = e3-e1
+        e_center = np.round((e1+e3)/2).astype(int)
+        self.pix_sep = self.det_distance * np.tan((phi1-phi3)*cp.pi/180) / self.pixel_size
+        self.beta_shift = self.det_distance * np.tan((phi1-phi2)*cp.pi/180) / self.pixel_size
         self.e_res = (e_sep)/np.round(self.pix_sep)
+        self.xkb1 = self.det_shape[1]//2 - self.pix_sep//2
+        self.xkb2 = self.det_shape[1]//2 - self.pix_sep//2 + self.beta_shift/self.e_res
+        self.xkel = self.det_shape[1]//2 + self.pix_sep//2
         e_range = np.round(self.det_shape[1] * self.e_res).astype(int)
         kvec = np.arange(self.det_shape[0])
         kvec -= self.det_shape[0]//2
@@ -102,14 +111,21 @@ class Signal():
 
     def create_sample(self):
         self.sample = np.zeros(self.det_shape)
-        self.sample[(self.offset-self.size_em2):(self.offset+self.size_em2),(self.offset-self.size_em2):(self.offset+self.size_em2)] = 1
-        self.sample[(self.offset-self.size_em1//2):(self.offset+self.size_em1//2),(self.offset-self.size_em1//2):(self.offset+self.size_em1//2)] += 1
+        y,x = np.indices(self.det_shape)
+        cen = np.array(self.det_shape)//2
+        r = np.sqrt((x-cen[0])**2+(y-cen[1])**2)
+        self.sample[r<self.size_em2] = 1
+        self.sample[r<self.size_em1//2] += 1
+        #self.sample[(self.offset-self.size_em2):(self.offset+self.size_em2),(self.offset-self.size_em2):(self.offset+self.size_em2)] = 1
+        #self.sample[(self.offset-self.size_em1//2):(self.offset+self.size_em1//2),(self.offset-self.size_em1//2):(self.offset+self.size_em1//2)] += 1
             
-    def lorentzian(self, x, x0, a, gam):
+    def lorentzian(self, x, a, x0, gam):
+        gam = gam/2
         return a * gam**2 / (gam**2 + (x-x0)**2)
 
     def gaussian(self, x, a, mu, sig):
-        return a/(sig*cp.sqrt(2*cp.pi)) * cp.exp(-(x-mu)**2/(2*sig**2))
+        sig = sig/2.355
+        return a * cp.exp(-(x-mu)**2/(2*sig**2))
  
     def sim_glob(self):
         self.file_per_run_counter = 0
@@ -155,50 +171,48 @@ class Signal():
             n += 1
         
     def _sim_frame(self, counter):
-        kbeta = cp.sqrt(self.lorentzian(cp.arange(self.det_shape[1]), self.xkb, 1, 3.7/self.e_res))  
-        elastic = cp.sqrt(self.lorentzian(cp.arange(self.det_shape[1]), self.xkel, 0.2, 9/self.e_res))
-        kspec = cp.array([kbeta, elastic])
-        spectrum = kbeta + elastic
+        kbeta1 = self.lorentzian(cp.arange(self.det_shape[1]), 1, self.xkb1, 3.7/self.e_res)  
+        kbeta2 = self.lorentzian(cp.arange(self.det_shape[1]), 1, self.xkb2, 3.7/self.e_res)  
+        #elastic = self.lorentzian(cp.arange(self.det_shape[1]), self.xkel, 1, 3.7/self.e_res)
+        elastic = cp.sqrt(self.gaussian(cp.arange(self.det_shape[1]), 100 ,self.xkel, 9/self.e_res))
+        spectrum = kbeta1 + kbeta2
         
         pop = self.calc_beam_profile(counter)
         pop_max = cp.round(pop.max()).astype(int)
         num_modes = len(pop)
 
         diff_pattern = cp.zeros(self.det_shape)
-        num_scatterer = len(cp.where(self.sample!=0)[0])
+        indices = cp.tile(cp.where(self.sample!=0)[0], (self.kvector.shape[0],1)).T
         ind1 = cp.tile(cp.where(self.sample==1)[0], (self.kvector.shape[0],1)).T
         ind2 = cp.tile(cp.where(self.sample==2)[0], (self.kvector.shape[0],1)).T
-        r_k1 = cp.matmul(ind1,self.kvector)/ind1.shape[-1]
-        r_k2 = cp.matmul(ind2,self.kvector)/ind2.shape[-1]
+
+        r_k_el = cp.matmul(indices,self.kvector)/self.kvector.shape[1]
+        r_k1 = cp.matmul(ind1,self.kvector)/self.kvector.shape[1]
+        r_k2 = cp.matmul(ind2,self.kvector)/self.kvector.shape[1]
+
         phases_fl1 = cp.array(cp.random.random(size=(1, num_modes, ind1.shape[0]))*2*cp.pi)
         phases_fl2 = cp.array(cp.random.random(size=(1, num_modes, ind2.shape[0]))*2*cp.pi)
-        phases_el = cp.zeros((1, num_modes, ind2.shape[0]))
+        phases_el = cp.zeros((1, num_modes, indices.shape[0]))
+
         psi1_fl = cp.exp(1j*(r_k1[:,:,cp.newaxis].transpose(1,2,0)+phases_fl1)).sum(-1)
         psi2_fl = cp.exp(1j*(r_k2[:,:,cp.newaxis].transpose(1,2,0)+phases_fl2)).sum(-1)
-        psi_el = cp.exp(1j*(r_k2[:,:,cp.newaxis].transpose(1,2,0)+phases_el)).sum(-1)
-        psi1_fl *= (pop / pop_max) * ind1.shape[0]/num_scatterer
-        psi2_fl *= (pop / pop_max) * ind2.shape[0]/num_scatterer
+        psi_el = cp.exp(1j*(r_k_el[:,:,cp.newaxis].transpose(1,2,0)+phases_el)).sum(-1)
+
+        psi1_fl *= (pop / pop_max)
+        psi2_fl *= (pop / pop_max)
         psi_el *= pop / pop_max
-        psi2d_fl = (psi1_fl.transpose(1,0)[:,:,cp.newaxis] * kbeta[cp.newaxis,:])
-        psi2d_fl *= (psi2_fl.transpose(1,0)[:,:,cp.newaxis] * kbeta[cp.newaxis,:])
-        psi2d_el = (psi_el.transpose(1,0)[:,:,cp.newaxis] * elastic[cp.newaxis,:])
-        if self.alpha_modes == 1:
-            psi2d = psi2d_fl + psi2d_el
-            mode_int = cp.abs(psi2d)**2
-            int_tot = mode_int.sum(0)
 
-        elif self.alpha_modes == 2:
-            int_fl = cp.abs(psi2d_fl)**2
-            int_el = cp.abs(psi2d_el)**2
-            mode_int = int_fl + int_el
-            int_tot = mode_int.sum(0)
-        
-        elif self.alpha_modes == 3:
-            beat_phases = (cp.arange(num_modes) * self.mode_period/self.beat_period * 2*cp.pi) % (2*cp.pi)
-            psi2d_beat = psi2d_fl + (psi2d_el.T * cp.exp(1j*beat_phases)).T
-            mode_int = cp.abs(psi2d_beat)**2
-            int_tot = mode_int.sum(0)
+        int_fl1 = cp.abs(psi1_fl)**2/ind1.shape[0]
+        int_fl2 = cp.abs(psi2_fl)**2/ind2.shape[0]
+        int_el = cp.abs(psi_el)**2/indices.shape[0]
+        int_el_norm = int_el * int_fl2.sum() / int_el.sum()
 
+        int2d_fl1 = int_fl1.transpose(1,0)[:,:,cp.newaxis] * kbeta1[cp.newaxis,:]
+        int2d_fl2 = int_fl2.transpose(1,0)[:,:,cp.newaxis] * kbeta2[cp.newaxis,:]
+        int2d_el = int_el_norm.transpose(1,0)[:,:,cp.newaxis] * elastic[cp.newaxis,:]
+
+        mode_int = int2d_fl1 + int2d_fl2 + int2d_el
+        int_tot = mode_int.sum(0)
         int_tot /= int_tot.sum() / self.num_photons
         int_filter = cundimage.gaussian_filter(int_tot, sigma=(0,1.13//self.binning), mode='constant')
         int_p = cp.random.poisson(cp.abs(int_filter),size=self.det_shape)
