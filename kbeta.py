@@ -173,7 +173,7 @@ class Signal():
         kbeta1 = self.lorentzian(cp.arange(self.det_shape[1]), 1, self.xkb1, 3.7/self.e_res)  
         kbeta2 = self.lorentzian(cp.arange(self.det_shape[1]), 1, self.xkb2, 3.7/self.e_res)  
         #elastic = self.lorentzian(cp.arange(self.det_shape[1]), self.xkel, 1, 3.7/self.e_res)
-        elastic = cp.sqrt(self.gaussian(cp.arange(self.det_shape[1]), 0.1 ,self.xkel, 9/self.e_res))
+        elastic = cp.sqrt(self.gaussian(cp.arange(self.det_shape[1]), 1 ,self.xkel, 9/self.e_res))
         spectrum = kbeta1 + kbeta2
         
         pop = self.calc_beam_profile(counter)
@@ -186,14 +186,14 @@ class Signal():
         ind2 = cp.tile(cp.where(self.sample==2)[0], (self.kvector.shape[0],1)).T
 
         r_k_el = cp.matmul(indices,self.kvector)/self.kvector.shape[1] #correct for broadcasting factor
-        r_k1 = cp.matmul(ind1,self.kvector)/self.kvector.shape[1]
+        r_k1 = cp.matmul(ind1,self.kvector)/self.kvector.shape[1] # shape = (num_emitter, kshape[1])
         r_k2 = cp.matmul(ind2,self.kvector)/self.kvector.shape[1]
 
-        phases_fl1 = cp.array(cp.random.random(size=(1, num_modes, ind1.shape[0]))*2*cp.pi)
+        phases_fl1 = cp.array(cp.random.random(size=(1, num_modes, ind1.shape[0]))*2*cp.pi) #shape = (1, num_modes, num_emitter) 
         phases_fl2 = cp.array(cp.random.random(size=(1, num_modes, ind2.shape[0]))*2*cp.pi)
         phases_el = cp.zeros((1, num_modes, indices.shape[0]))
 
-        psi1_fl = cp.exp(1j*(r_k1[:,:,cp.newaxis].transpose(1,2,0)+phases_fl1)).sum(-1)
+        psi1_fl = cp.exp(1j*(r_k1[:,:,cp.newaxis].transpose(1,2,0)+phases_fl1)).sum(-1) # sum over all emitter
         psi2_fl = cp.exp(1j*(r_k2[:,:,cp.newaxis].transpose(1,2,0)+phases_fl2)).sum(-1)
         psi_el = cp.exp(1j*(r_k_el[:,:,cp.newaxis].transpose(1,2,0)+phases_el)).sum(-1)
 
@@ -204,15 +204,15 @@ class Signal():
         int_fl1 = cp.abs(psi1_fl)**2 
         int_fl2 = cp.abs(psi2_fl)**2 
         int_el = cp.abs(psi_el)**2 
-        int_el_norm = int_el * int_fl2.sum() / int_el.sum()
+        #int_el_norm = int_el * int_fl2.sum() / int_el.sum()
 
-        int2d_fl1 = int_fl1.transpose(1,0)[:,:,cp.newaxis] * kbeta1[cp.newaxis,:]
-        int2d_fl2 = int_fl2.transpose(1,0)[:,:,cp.newaxis] * kbeta2[cp.newaxis,:]
-        int2d_el = int_el_norm.transpose(1,0)[:,:,cp.newaxis] * elastic[cp.newaxis,:]
+        int2d_fl1 = (int_fl1.transpose(1,0)[:,:,cp.newaxis]).sum(0) * kbeta1[cp.newaxis,:] # sum over all modes
+        int2d_fl2 = (int_fl2.transpose(1,0)[:,:,cp.newaxis]).sum(0) * kbeta2[cp.newaxis,:]
+        int2d_el = (int_el.transpose(1,0)[:,:,cp.newaxis]).sum(0) * elastic[cp.newaxis,:]
 
-        mode_int = int2d_fl1 + int2d_fl2 + int2d_el
-        int_tot = mode_int.sum(0)
-        int_tot /= int_tot.sum() / self.num_photons
+        mode_fl = int2d_fl1 + int2d_fl2
+        mode_fl *= self.num_photons / mode_fl.sum()
+        int_tot = mode_fl + int2d_el * 0.1 * self.num_photons / int2d_el.sum()
         if self.efilter:
             int_filter = cundimage.gaussian_filter(int_tot, sigma=(0,1.13/self.e_res), mode='constant')
         else:
