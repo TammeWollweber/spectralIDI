@@ -98,7 +98,7 @@ class Signal():
         self.beta_shift = self.det_distance * np.tan((phi1-phi2)*cp.pi/180) / self.pixel_size
         self.e_res = (e_sep)/np.round(self.pix_sep)
         self.xkb1 = self.det_shape[1]//2 - self.pix_sep//2
-        self.xkb2 = self.det_shape[1]//2 - self.pix_sep//2 + self.beta_shift/self.e_res
+        self.xkb2 = self.det_shape[1]//2 - self.pix_sep//2 + self.beta_shift
         self.xkel = self.det_shape[1]//2 + self.pix_sep//2
         e_range = np.round(self.det_shape[1] * self.e_res).astype(int)
         kvec = np.arange(self.det_shape[0])
@@ -174,7 +174,7 @@ class Signal():
         kbeta1 = self.lorentzian(cp.arange(self.det_shape[1]), 1, self.xkb1, 3.7/self.e_res)  
         kbeta2 = self.lorentzian(cp.arange(self.det_shape[1]), 1, self.xkb2, 3.7/self.e_res)  
         #elastic = self.lorentzian(cp.arange(self.det_shape[1]), self.xkel, 1, 3.7/self.e_res)
-        elastic = cp.sqrt(self.gaussian(cp.arange(self.det_shape[1]), 100 ,self.xkel, 9/self.e_res))
+        elastic = cp.sqrt(self.gaussian(cp.arange(self.det_shape[1]), 1 ,self.xkel, 9/self.e_res))
         spectrum = kbeta1 + kbeta2
         
         pop = self.calc_beam_profile(counter)
@@ -228,7 +228,7 @@ class Signal():
 
     def calc_beam_profile(self, counter):
         x = cp.arange(-1e4, 1e4, self.mode_period) #555 is 6.2/11 (FWHM/num_modes without polarization)
-        y = self.num_photons * self.gaussian(x, self.mode_period, 0, 2596) #2596 is 6.1/2.35
+        y = self.num_photons * self.gaussian(x, 1, 0, 6.1*1000) #2596 is 6.1/2.35
         shot_noise = cp.random.uniform(-0.8, 0.8, len(y))
         y_noise = cp.round(y + shot_noise * y).astype(int)
         mask = cp.zeros_like(y_noise)
