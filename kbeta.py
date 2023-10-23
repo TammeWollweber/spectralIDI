@@ -29,7 +29,7 @@ JOBS_PER_DEV = 4
 
 class Signal():  
     def __init__(self, det_shape=(1024,1024), binning=8, num_shots=1000, num_photons=50,
-                 noise=60, incoherent=False, efilter=False, alpha_modes=2, det_dist=4, pixel_size=100):
+                 noise=60, efilter=False, det_dist=4, pixel_size=100):
         self.det_shape = tuple(np.array(det_shape) // binning)
         print('det_shape: ', self.det_shape)        
         self.binning = binning
@@ -37,10 +37,9 @@ class Signal():
         self.det_distance = det_dist 
         self.pixel_size = pixel_size*1e-6
         self.efilter = efilter
-        self.alpha_modes = alpha_modes
         self.num_photons = num_photons
 
-        self.size_em1 = 10
+        self.size_em1 = 7
         self.size_em2 = 10
         self.sample = None
         self.hits = []
@@ -65,8 +64,6 @@ class Signal():
         self._init_directory()
         self.num_cores = None
         self.integrated_signal = None
-
-        self.incoherent = incoherent
 
     def _init_directory(self):
         self.exp = datetime.today().strftime('%y%m%d')
@@ -115,7 +112,9 @@ class Signal():
         cen = np.array(self.det_shape)//2
         r = np.sqrt((x-cen[0])**2+(y-cen[1])**2)
         self.sample[r<self.size_em2] = 1
-        self.sample[r<self.size_em1//2] += 1
+        self.sample[r<self.size_em1] += 1
+        print('num_emitter 1: ', len(np.where(self.sample==1)[0]))
+        print('num_emitter 2: ', len(np.where(self.sample==2)[0]))
         #self.sample[(self.offset-self.size_em2):(self.offset+self.size_em2),(self.offset-self.size_em2):(self.offset+self.size_em2)] = 1
         #self.sample[(self.offset-self.size_em1//2):(self.offset+self.size_em1//2),(self.offset-self.size_em1//2):(self.offset+self.size_em1//2)] += 1
             
@@ -174,7 +173,7 @@ class Signal():
         kbeta1 = self.lorentzian(cp.arange(self.det_shape[1]), 1, self.xkb1, 3.7/self.e_res)  
         kbeta2 = self.lorentzian(cp.arange(self.det_shape[1]), 1, self.xkb2, 3.7/self.e_res)  
         #elastic = self.lorentzian(cp.arange(self.det_shape[1]), self.xkel, 1, 3.7/self.e_res)
-        elastic = cp.sqrt(self.gaussian(cp.arange(self.det_shape[1]), 1 ,self.xkel, 9/self.e_res))
+        elastic = cp.sqrt(self.gaussian(cp.arange(self.det_shape[1]), 0.1 ,self.xkel, 9/self.e_res))
         spectrum = kbeta1 + kbeta2
         
         pop = self.calc_beam_profile(counter)
@@ -186,7 +185,7 @@ class Signal():
         ind1 = cp.tile(cp.where(self.sample==1)[0], (self.kvector.shape[0],1)).T
         ind2 = cp.tile(cp.where(self.sample==2)[0], (self.kvector.shape[0],1)).T
 
-        r_k_el = cp.matmul(indices,self.kvector)/self.kvector.shape[1]
+        r_k_el = cp.matmul(indices,self.kvector)/self.kvector.shape[1] #correct for broadcasting factor
         r_k1 = cp.matmul(ind1,self.kvector)/self.kvector.shape[1]
         r_k2 = cp.matmul(ind2,self.kvector)/self.kvector.shape[1]
 
@@ -202,9 +201,9 @@ class Signal():
         psi2_fl *= (pop / pop_max)
         psi_el *= pop / pop_max
 
-        int_fl1 = cp.abs(psi1_fl)**2/ind1.shape[0]
-        int_fl2 = cp.abs(psi2_fl)**2/ind2.shape[0]
-        int_el = cp.abs(psi_el)**2/indices.shape[0]
+        int_fl1 = cp.abs(psi1_fl)**2 
+        int_fl2 = cp.abs(psi2_fl)**2 
+        int_el = cp.abs(psi_el)**2 
         int_el_norm = int_el * int_fl2.sum() / int_el.sum()
 
         int2d_fl1 = int_fl1.transpose(1,0)[:,:,cp.newaxis] * kbeta1[cp.newaxis,:]
@@ -214,7 +213,10 @@ class Signal():
         mode_int = int2d_fl1 + int2d_fl2 + int2d_el
         int_tot = mode_int.sum(0)
         int_tot /= int_tot.sum() / self.num_photons
-        int_filter = cundimage.gaussian_filter(int_tot, sigma=(0,1.13//self.binning), mode='constant')
+        if self.efilter:
+            int_filter = cundimage.gaussian_filter(int_tot, sigma=(0,1.13/self.e_res), mode='constant')
+        else:
+            int_filter = int_tot
         int_p = cp.random.poisson(cp.abs(int_filter),size=self.det_shape)
         int_p *= self.adu_phot
         diff_pattern += int_p
@@ -236,7 +238,7 @@ class Signal():
         y_final = (y_noise * mask)//2
         #cp.save('beam_profile_{}.npy'.format(counter), y_noise)
         y_final = y_final[y_final!=0]
-        return cp.repeat(y_final,2)
+        return cp.repeat(y_final,2) #repeat to take polarization into account
 
 
     def save_file(self, data, counter):
@@ -260,18 +262,14 @@ if __name__ == '__main__':
     num_photons = config.getint(section, 'num_photons', fallback=1000)
     num_shots = config.getint(section, 'num_shots', fallback=1000)
     noise = config.getint(section, 'noise', fallback=60)
-    modes= config.getint(section, 'modes', fallback=1)
-    lines = config.getboolean(section, 'lines', fallback=False)
-    incoherent = config.getboolean(section, 'incoherent', fallback=True)
     efilter = config.getboolean(section, 'filter', fallback=True)
-    alpha = config.getint(section, 'alpha', fallback=2)
     det_dist = config.getint(section, 'det_dist', fallback=4)
     pixel_size = config.getint(section, 'pixel_size', fallback=100)
 
     det_shape = fshape
     #num_photons = np.ceil(args.photon_density * det_shape[0] * det_shape[1]).astype(int)
  
-    sig = Signal(det_shape=det_shape, binning=binning, num_shots=num_shots, num_photons=num_photons,                 noise=noise, incoherent=incoherent, efilter=efilter, alpha_modes=alpha, det_dist=det_dist, pixel_size=pixel_size)
+    sig = Signal(det_shape=det_shape, binning=binning, num_shots=num_shots, num_photons=num_photons, noise=noise, efilter=efilter, det_dist=det_dist, pixel_size=pixel_size)
     sig.create_sample()
     sig.sim_glob()
 
