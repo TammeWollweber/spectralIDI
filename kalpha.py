@@ -51,7 +51,6 @@ class Signal():
         self.kvector = None
         self.r_k = None
         self.beat_period = 413 #attoseconds
-        self.mode_period = 564 #attoseconds
         self.adu_phot = 160
         self.fft = None
         self.corr_list = []
@@ -86,22 +85,34 @@ class Signal():
         print('Simulate {} shots.'.format(self.num_shots))
         print('Save {} files.'.format(cp.ceil(self.num_shots/self.shots_per_file).astype(int)))
 
-    def _init_sim(self):
-        e_sep = 8047-8027
+    def _init_sim(self, counter):
+        phi1 = 53.55
+        phi2 = 53.36
+        E1 = 8047
+        E2 = 8027
+        darwin = 2.79 #arcsec
+        e_sep = E1 - E2
         e_center = np.round((8047+8027)/2).astype(int)
-        #self.lam = const.h * const.c / (e_center * const.e)
         self.lam = self.pixel_size / self.det_distance
         fov = self.lam * self.sample.shape[0]
         kscale_1d = fov
 
-        self.pix_sep = self.det_distance * np.tan((53.55-53.36)*cp.pi/180) / self.pixel_size
+        self.pix_sep = self.det_distance * np.tan((phi1-phi2)*cp.pi/180) / self.pixel_size
         self.xka2 = self.det_shape[1]//2 - self.pix_sep//2
         self.xka1 = self.det_shape[1]//2 + self.pix_sep//2
         self.e_res = (e_sep)/np.round(self.pix_sep)
+        self.mode_period = (6200/np.ceil(6200/600)) * 2.17/self.e_res  #pulse duration over energy resolution compared to fabian times tc in attoseconds
+        self.deltaE = self.det_distance * (cp.tan((phi1+darwin/3600)*np.pi/180) - cp.tan(phi1*np.pi/180)) / self.pixel_size #uncertainty from darwin plateau in units of pixel
+
+
         e_range = np.round(self.det_shape[1] * self.e_res).astype(int)
         kvec = np.arange(self.det_shape[0])
         kvec -= self.det_shape[0]//2
-
+        if counter == 0:
+            print('eres: ', self.e_res)
+            print('mode_period: ', self.mode_period)
+            print('dE [eV], [pix]: ', self.deltaE*self.e_res, self.deltaE)
+ 
         kscale_corr = 2 * np.pi * (np.arange(self.det_shape[1])-self.det_shape[1]//2) * self.e_res/e_center
         kscale_2d = kscale_1d * kscale_corr + kscale_1d
         self.kvector = cp.outer(cp.array(kvec), cp.array(kscale_2d)).T
@@ -151,7 +162,7 @@ class Signal():
         for i, _ in enumerate(np.arange(num_files)[rank::num_jobs]):
             idx = i*num_jobs+rank
             cp.random.seed(idx+int(time.time()))
-            self._init_sim()
+            self._init_sim(i)
             data = cp.zeros((self.shots_per_file, self.det_shape[0], self.det_shape[1]))
             self.sim_file(data, idx)
             self.save_file(data, idx)
@@ -177,6 +188,8 @@ class Signal():
         pop = self.calc_beam_profile(counter)
         pop_max = cp.round(pop.max()).astype(int)
         num_modes = len(pop)
+        if counter == 0:
+            print('num modes: ', num_modes)
 
         diff_pattern = cp.zeros(self.det_shape)
         indices = cp.tile(cp.random.choice(cp.arange(0,self.sample.shape[0]), size=int(self.psample.sum()), p=self.psample/self.psample.sum()), (self.kvector.shape[0],1)).T
@@ -208,7 +221,7 @@ class Signal():
 
         int_tot /= int_tot.sum() / self.num_photons
         if self.efilter:
-            int_filter = cundimage.gaussian_filter(int_tot, sigma=(0,1.13//self.e_res), mode='constant')
+            int_filter = cundimage.gaussian_filter(int_tot, sigma=(0,self.deltaE), mode='constant')
         else:
             int_filter = int_tot
         int_p = cp.random.poisson(cp.abs(int_filter),size=self.det_shape)

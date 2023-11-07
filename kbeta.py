@@ -51,8 +51,6 @@ class Signal():
         self.num_shots = num_shots 
         self.kvector = None
         self.r_k = None
-        self.beat_period = 413 #attoseconds
-        self.mode_period = 564 #attoseconds
         self.adu_phot = 160
         self.fft = None
         self.corr_list = []
@@ -85,7 +83,7 @@ class Signal():
         print('Simulate {} shots.'.format(self.num_shots))
         print('Save {} files.'.format(cp.ceil(self.num_shots/self.shots_per_file).astype(int)))
 
-    def _init_sim(self):
+    def _init_sim(self, counter):
         if self.emission_line == 'kb1':
             e1 = 8905
             w1 = 3.7
@@ -93,6 +91,7 @@ class Signal():
             w2 = 3.7
             phi1 = 46.48
             phi2 = 46.45
+            darwin = 2.17
         elif self.emission_line == 'kb5':
             e1 = 8975
             e2 = 8985
@@ -100,6 +99,7 @@ class Signal():
             w2 = 3.7
             phi1 = 46.01
             phi2 = 45.95
+            darwin = 2.13
         e3 = 9000 #elastic 
         phi3 = 45.85
         e_sep = e3-e1
@@ -110,8 +110,14 @@ class Signal():
         self.pix_sep = self.det_distance * np.tan((phi1-phi3)*cp.pi/180) / self.pixel_size
         self.beta_shift = self.det_distance * np.tan((phi1-phi2)*cp.pi/180) / self.pixel_size
         self.e_res = (e_sep)/np.round(self.pix_sep)
-        #print('bshift: ', self.beta_shift)
-        #print('eres: ', self.e_res)
+        self.mode_period = (6200/np.ceil(6200/600)) * 2.17/self.e_res  #pulse duration over energy resolution compared to fabian times tc in attoseconds
+        self.deltaE = self.det_distance * (cp.tan((phi1+darwin/3600)*np.pi/180) - cp.tan(phi1*np.pi/180)) / self.pixel_size #uncertainty from darwin plateau in units of pixel
+        
+        if counter == 0:
+            print('bshift: ', self.beta_shift)
+            print('eres: ', self.e_res)
+            print('mode_period: ', self.mode_period)
+            print('dE [eV], [pix]: ', self.deltaE*self.e_res, self.deltaE)
         self.xkb1 = self.det_shape[1]//2 - self.pix_sep//2
         self.xkb2 = self.det_shape[1]//2 - self.pix_sep//2 + self.beta_shift
         self.xkel = self.det_shape[1]//2 + self.pix_sep//2
@@ -175,7 +181,7 @@ class Signal():
         for i, _ in enumerate(np.arange(num_files)[rank::num_jobs]):
             idx = i*num_jobs+rank
             cp.random.seed(idx+int(time.time()))
-            self._init_sim()
+            self._init_sim(i)
             data = cp.zeros((self.shots_per_file, self.det_shape[0], self.det_shape[1]))
             self.sim_file(data, idx)
             self.save_file(data, idx)
@@ -201,6 +207,8 @@ class Signal():
         pop = self.calc_beam_profile(counter)
         pop_max = cp.round(pop.max()).astype(int)
         num_modes = len(pop)
+        if counter == 0:
+            print('num modes: ', num_modes)
 
         diff_pattern = cp.zeros(self.det_shape)
         indices = cp.tile(cp.random.choice(cp.arange(0,self.sample.shape[0]), size=int(self.p_tot.sum()), p=self.p_tot/self.p_tot.sum()), (self.kvector.shape[0],1)).T
@@ -236,7 +244,7 @@ class Signal():
         int_tot = mode_fl + int2d_el * 0.1 * self.num_photons / int2d_el.sum()
         #int_tot = mode_fl + int2d_el * 10 * self.num_photons / int2d_el.sum()
         if self.efilter:
-            int_filter = cundimage.gaussian_filter(int_tot, sigma=(0,1.13/self.e_res), mode='constant')
+            int_filter = cundimage.gaussian_filter(int_tot, sigma=(0, self.deltaE), mode='constant')
         else:
             int_filter = int_tot
         int_p = cp.random.poisson(cp.abs(int_filter),size=self.det_shape)
@@ -251,8 +259,8 @@ class Signal():
         return diff_pattern
 
     def calc_beam_profile(self, counter):
-        x = cp.arange(-1e4, 1e4, self.mode_period) #555 is 6.2/11 (FWHM/num_modes without polarization)
-        y = self.num_photons * self.gaussian(x, 1, 0, 6.1*1000) #2596 is 6.1/2.35
+        x = cp.arange(-1e4, 1e4, self.mode_period) #(FWHM/num_modes without polarization)
+        y = self.num_photons * self.gaussian(x, 1, 0, 6.2*1000) #2596 is 6.2/2.35
         shot_noise = cp.random.uniform(-0.8, 0.8, len(y))
         y_noise = cp.round(y + shot_noise * y).astype(int)
         mask = cp.zeros_like(y_noise)
