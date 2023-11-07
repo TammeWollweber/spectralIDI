@@ -195,7 +195,6 @@ class Signal():
     def _sim_frame(self, counter):
         kbeta1 = self.lorentzian(cp.arange(self.det_shape[1]), 1, self.xkb1, 3.7/self.e_res)  
         kbeta2 = self.lorentzian(cp.arange(self.det_shape[1]), 1, self.xkb2, 3.7/self.e_res)  
-        #elastic = self.lorentzian(cp.arange(self.det_shape[1]), self.xkel, 1, 3.7/self.e_res)
         elastic = cp.sqrt(self.gaussian(cp.arange(self.det_shape[1]), 1 ,self.xkel, 9/self.e_res))
         spectrum = kbeta1 + kbeta2
         
@@ -207,9 +206,6 @@ class Signal():
         indices = cp.tile(cp.random.choice(cp.arange(0,self.sample.shape[0]), size=int(self.p_tot.sum()), p=self.p_tot/self.p_tot.sum()), (self.kvector.shape[0],1)).T
         ind_inner = cp.tile(cp.random.choice(cp.arange(0,self.sample.shape[0]), size=int(self.p_inner.sum()), p=self.p_inner/self.p_inner.sum()), (self.kvector.shape[0],1)).T
         ind_outer = cp.tile(cp.random.choice(cp.arange(0,self.sample.shape[0]), size=int(self.p_outer.sum()), p=self.p_outer/self.p_outer.sum()), (self.kvector.shape[0],1)).T
-        #indices = cp.tile(cp.where(self.sample!=0)[0], (self.kvector.shape[0],1)).T
-        #ind1 = cp.tile(cp.where(self.sample==1)[0], (self.kvector.shape[0],1)).T
-        #ind2 = cp.tile(cp.where(self.sample==2)[0], (self.kvector.shape[0],1)).T
 
         r_k_el = cp.matmul(indices,self.kvector)/self.kvector.shape[1] #correct for broadcasting factor
         r_k1 = cp.matmul(ind_inner,self.kvector)/self.kvector.shape[1] # shape = (num_emitter, kshape[1])
@@ -230,7 +226,6 @@ class Signal():
         int_fl_inner = cp.abs(psi_fl_inner)**2 
         int_fl_outer = cp.abs(psi_fl_outer)**2 
         int_el = cp.abs(psi_el)**2 
-        #int_el_norm = int_el * int_fl2.sum() / int_el.sum()
 
         int2d_fl_inner = (int_fl_inner.transpose(1,0)[:,:,cp.newaxis]).sum(0) * kbeta1[cp.newaxis,:] # sum over all modes
         int2d_fl_outer = (int_fl_outer.transpose(1,0)[:,:,cp.newaxis]).sum(0) * kbeta2[cp.newaxis,:]
@@ -238,8 +233,8 @@ class Signal():
 
         mode_fl = int2d_fl_inner + int2d_fl_outer
         mode_fl *= self.num_photons / mode_fl.sum()
-        #int_tot = mode_fl + int2d_el * 0.1 * self.num_photons / int2d_el.sum()
-        int_tot = mode_fl + int2d_el * 10 * self.num_photons / int2d_el.sum()
+        int_tot = mode_fl + int2d_el * 0.1 * self.num_photons / int2d_el.sum()
+        #int_tot = mode_fl + int2d_el * 10 * self.num_photons / int2d_el.sum()
         if self.efilter:
             int_filter = cundimage.gaussian_filter(int_tot, sigma=(0,1.13/self.e_res), mode='constant')
         else:
