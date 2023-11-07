@@ -15,6 +15,7 @@ import os
 import multiprocessing as mp
 from scipy import signal
 from scipy import ndimage as ndi
+from scipy import constants as const
 import h5py as h5
 import argparse
 import configparser
@@ -25,7 +26,7 @@ from cupyx.scipy import ndimage as cundimage
 plt.ion()
 
 NUM_DEV = 3 
-JOBS_PER_DEV = 4
+JOBS_PER_DEV = 2
 
 class Signal():  
     def __init__(self, det_shape=(1024,1024), binning=8, num_shots=1000, num_photons=50,
@@ -40,7 +41,8 @@ class Signal():
         self.alpha_modes = alpha_modes
         self.num_photons = num_photons
 
-        self.size_emitter = 10
+        self.size_em = 10
+        self.sample_shape = (192,192)
         self.sample = None
         self.hits = []
         self.hit_size = None
@@ -87,6 +89,11 @@ class Signal():
     def _init_sim(self):
         e_sep = 8047-8027
         e_center = np.round((8047+8027)/2).astype(int)
+        #self.lam = const.h * const.c / (e_center * const.e)
+        self.lam = self.pixel_size / self.det_distance
+        fov = self.lam * self.sample.shape[0]
+        kscale_1d = fov
+
         self.pix_sep = self.det_distance * np.tan((53.55-53.36)*cp.pi/180) / self.pixel_size
         self.xka2 = self.det_shape[1]//2 - self.pix_sep//2
         self.xka1 = self.det_shape[1]//2 + self.pix_sep//2
@@ -94,16 +101,23 @@ class Signal():
         e_range = np.round(self.det_shape[1] * self.e_res).astype(int)
         kvec = np.arange(self.det_shape[0])
         kvec -= self.det_shape[0]//2
-        kscale_1d = 2 * np.pi / self.det_shape[0]
+
         kscale_corr = 2 * np.pi * (np.arange(self.det_shape[1])-self.det_shape[1]//2) * self.e_res/e_center
         kscale_2d = kscale_1d * kscale_corr + kscale_1d
         self.kvector = cp.outer(cp.array(kvec), cp.array(kscale_2d)).T
         self.sample = cp.array(self.sample)
+        self.psample = cp.array(self.psample)
 
     def create_sample(self):
-        self.sample = np.zeros(self.det_shape)
-        half_size = int(self.size_emitter/2)
-        self.sample[(self.offset-half_size):(self.offset+half_size),(self.offset-half_size):(self.offset+half_size)] = 1
+        mask = np.zeros(self.sample_shape)
+        self.sample = np.zeros(self.sample_shape)
+        center = np.array(self.sample.shape)//2
+        X,Y = np.meshgrid(np.arange(self.sample_shape[0])-center[0], np.arange(self.sample_shape[1])-center[1], indexing='ij')
+        r = np.sqrt(X**2 + Y**2)
+        mask[r<self.size_em] = 1
+        self.sample = 2*np.sqrt(np.abs(self.size_em**2-r**2)*mask)
+        self.psample = self.sample.sum(-1)
+        print('num_emitter: ', self.sample.sum())
             
     def lorentzian(self, x, x0, a, gam):
         return a * gam**2 / (gam**2 + (x-x0)**2)
@@ -165,7 +179,7 @@ class Signal():
         num_modes = len(pop)
 
         diff_pattern = cp.zeros(self.det_shape)
-        indices = cp.tile(cp.nonzero(self.sample)[0], (self.kvector.shape[0],1)).T
+        indices = cp.tile(cp.random.choice(cp.arange(0,self.sample.shape[0]), size=int(self.psample.sum()), p=self.psample/self.psample.sum()), (self.kvector.shape[0],1)).T
         r_k = cp.matmul(indices,self.kvector)/indices.shape[-1]
         if self.incoherent:
             phases_rand = cp.array(cp.random.random(size=(2, num_modes, indices.shape[0]))*2*cp.pi)
@@ -193,7 +207,10 @@ class Signal():
 
 
         int_tot /= int_tot.sum() / self.num_photons
-        int_filter = cundimage.gaussian_filter(int_tot, sigma=(0,1.13//self.binning), mode='constant')
+        if self.efilter:
+            int_filter = cundimage.gaussian_filter(int_tot, sigma=(0,1.13//self.e_res), mode='constant')
+        else:
+            int_filter = int_tot
         int_p = cp.random.poisson(cp.abs(int_filter),size=self.det_shape)
         int_p *= self.adu_phot
         diff_pattern += int_p
@@ -242,7 +259,8 @@ if __name__ == '__main__':
     incoherent = config.getboolean(section, 'incoherent', fallback=True)
     efilter = config.getboolean(section, 'filter', fallback=True)
     alpha = config.getint(section, 'alpha', fallback=2)
-    det_dist = config.getint(section, 'det_dist', fallback=4)
+    det_dist = config.getfloat(section, 'det_dist', fallback=1.)
+    print(det_dist)
     pixel_size = config.getint(section, 'pixel_size', fallback=100)
 
     det_shape = fshape
