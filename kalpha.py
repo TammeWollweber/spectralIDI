@@ -19,6 +19,7 @@ from scipy import constants as const
 import h5py as h5
 import argparse
 import configparser
+from configobj import ConfigObj
 import ctypes
 import cupy as cp
 from cupyx.scipy import signal as cusignal
@@ -26,11 +27,16 @@ from cupyx.scipy import ndimage as cundimage
 plt.ion()
 
 NUM_DEV = 3 
-JOBS_PER_DEV = 2
+JOBS_PER_DEV = 3
 
 class Signal():  
-    def __init__(self, det_shape=(1024,1024), binning=8, num_shots=1000, num_photons=50,
+    def __init__(self, elements, emission_lines, det_shape=(1024,1024), binning=8, num_shots=1000, num_photons=50,
                  noise=60, incoherent=False, efilter=False, alpha_modes=2, det_dist=4, pixel_size=100):
+
+        self.elements = elements
+        self.lines = emission_lines
+        self.specs = []
+
         self.det_shape = tuple(np.array(det_shape) // binning)
         print('det_shape: ', self.det_shape)        
         self.binning = binning
@@ -42,7 +48,7 @@ class Signal():
         self.num_photons = num_photons
 
         self.size_em = 10
-        self.sample_shape = (192,192)
+        self.sample_shape = (160,160)
         self.sample = None
         self.hits = []
         self.hit_size = None
@@ -63,11 +69,12 @@ class Signal():
         self.run_num = 0
         self.exp = None
         self.dir = '/mpsd/cni/processed/wittetam/sim/raw/'
-        self._init_directory()
         self.num_cores = None
         self.integrated_signal = None
-
         self.incoherent = incoherent
+
+        self._init_directory()
+        self._init_lines()
 
     def _init_directory(self):
         self.exp = datetime.today().strftime('%y%m%d')
@@ -85,19 +92,26 @@ class Signal():
         print('Simulate {} shots.'.format(self.num_shots))
         print('Save {} files.'.format(cp.ceil(self.num_shots/self.shots_per_file).astype(int)))
 
+    def _init_lines(self):
+        config = ConfigObj('elements.ini')
+        for e in self.elements:
+            for l in self.lines:
+                self.specs.append(config[e][l])
+
+
     def _init_sim(self, counter):
-        phi1 = 53.55
-        phi2 = 53.36
-        E1 = 8047
-        E2 = 8027
-        darwin = 2.79 #arcsec
+        phi1 = float(self.specs[0]['phi'])
+        phi2 = float(self.specs[1]['phi'])
+        E1 = float(self.specs[0]['E'])
+        E2 = float(self.specs[1]['E'])
+        darwin = np.max((float(self.specs[0]['darwin']), float(self.specs[1]['darwin'])))
         e_sep = E1 - E2
-        e_center = np.round((8047+8027)/2).astype(int)
+        e_center = np.round((E1 + E2)/2).astype(int)
         self.lam = self.pixel_size / self.det_distance
         fov = self.lam * self.sample.shape[0]
         kscale_1d = fov
 
-        self.pix_sep = self.det_distance * np.tan((phi1-phi2)*cp.pi/180) / self.pixel_size
+        self.pix_sep = self.det_distance * np.tan(np.abs(phi1-phi2)*cp.pi/180) / self.pixel_size
         self.xka2 = self.det_shape[1]//2 - self.pix_sep//2
         self.xka1 = self.det_shape[1]//2 + self.pix_sep//2
         self.e_res = (e_sep)/np.round(self.pix_sep)
@@ -143,7 +157,7 @@ class Signal():
             mp.set_start_method('spawn')
         except RuntimeError:
             pass
-
+        
         jobs = [mp.Process(target=self.worker, args=(d,)) for
                     d in range(num_jobs)]
         [j.start() for j in jobs]
@@ -156,9 +170,10 @@ class Signal():
         devnum = rank // JOBS_PER_DEV
         cp.cuda.Device(devnum).use()
 
-        data_arr = mp.Array(ctypes.c_double, self.shots_per_file)
         num_files = np.ceil(self.num_shots / self.shots_per_file).astype(int)
+        data_arr = mp.Array(ctypes.c_double, self.shots_per_file)
         stime = time.time()
+
         for i, _ in enumerate(np.arange(num_files)[rank::num_jobs]):
             idx = i*num_jobs+rank
             cp.random.seed(idx+int(time.time()))
@@ -180,8 +195,8 @@ class Signal():
             n += 1
         
     def _sim_frame(self, counter):
-        kalpha1 = self.lorentzian(cp.arange(self.det_shape[1]), self.xka1, 1, 2.11/self.e_res)  
-        kalpha2 = self.lorentzian(cp.arange(self.det_shape[1]), self.xka2, 0.5, 2.17/self.e_res)  
+        kalpha1 = self.lorentzian(cp.arange(self.det_shape[1]), self.xka1, 1, float(self.specs[0]['w'])/self.e_res)  
+        kalpha2 = self.lorentzian(cp.arange(self.det_shape[1]), self.xka2, 0.5, float(self.specs[1]['w'])/self.e_res)  
         kspec = cp.sqrt(cp.array([kalpha1, kalpha2]))
         spectrum = cp.sqrt(kalpha1 + kalpha2)
         
@@ -213,7 +228,7 @@ class Signal():
         
         elif self.alpha_modes == 3:
             beat_phases = (cp.arange(num_modes) * self.mode_period/self.beat_period * 2*cp.pi) % (2*cp.pi)
-            psi2d = (psi.transpose(2,0,1)[:,:,:,cp.newaxis] * cp.tile(spectrum,(2,1))[cp.newaxis,:,:]).transpose(0,1,3,2)
+            psi2d = 1/2 * (psi.transpose(2,0,1)[:,:,:,cp.newaxis] * cp.tile(spectrum,(2,1))[cp.newaxis,:,:]).transpose(0,1,3,2)
             psi2d_beat = psi2d[:,:,:,0] + (psi2d[:,:,:,1].T * cp.exp(1j*beat_phases)).T
             mode_int = cp.abs(psi2d_beat)**2
             int_tot = mode_int.sum(0)
@@ -275,11 +290,14 @@ if __name__ == '__main__':
     det_dist = config.getfloat(section, 'det_dist', fallback=1.)
     print(det_dist)
     pixel_size = config.getint(section, 'pixel_size', fallback=100)
-
     det_shape = fshape
     #num_photons = np.ceil(args.photon_density * det_shape[0] * det_shape[1]).astype(int)
+
+    elements = [e for e in config.get(section, 'elements').split()]
+    emission_lines = [l for l in config.get(section, 'emission_lines').split()]
+    print('Simulate {} line for {}'.format(emission_lines, elements))
  
-    sig = Signal(det_shape=det_shape, binning=binning, num_shots=num_shots, num_photons=num_photons, 
+    sig = Signal(elements, emission_lines, det_shape=det_shape, binning=binning, num_shots=num_shots, num_photons=num_photons, 
                  noise=noise, incoherent=incoherent, efilter=efilter, alpha_modes=alpha, det_dist=det_dist, pixel_size=pixel_size)
     sig.create_sample()
     sig.sim_glob()

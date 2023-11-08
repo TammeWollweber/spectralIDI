@@ -19,6 +19,7 @@ from scipy import ndimage as ndi
 import h5py as h5
 import argparse
 import configparser
+from configobj import ConfigObj
 import ctypes
 import cupy as cp
 from cupyx.scipy import signal as cusignal
@@ -29,8 +30,13 @@ NUM_DEV = 1
 JOBS_PER_DEV = 1
 
 class Signal():  
-    def __init__(self, det_shape=(1024,1024), binning=8, num_shots=1000, num_photons=50,
+    def __init__(self, elements, lines, det_shape=(1024,1024), binning=8, num_shots=1000, num_photons=50,
                  emission_line='kb1', noise=60, efilter=False, det_dist=4, pixel_size=100):
+
+        self.elements = elements
+        self.lines = lines
+        self.specs = []
+
         self.det_shape = tuple(np.array(det_shape) // binning)
         print('det_shape: ', self.det_shape)        
         self.binning = binning
@@ -63,9 +69,10 @@ class Signal():
         self.run_num = 0
         self.exp = None
         self.dir = '/mpsd/cni/processed/wittetam/sim/raw/'
-        self._init_directory()
         self.num_cores = None
         self.integrated_signal = None
+        self._init_directory()
+        self._init_lines()
 
     def _init_directory(self):
         self.exp = datetime.today().strftime('%y%m%d')
@@ -83,32 +90,29 @@ class Signal():
         print('Simulate {} shots.'.format(self.num_shots))
         print('Save {} files.'.format(cp.ceil(self.num_shots/self.shots_per_file).astype(int)))
 
+    def _init_lines(self):
+        config = ConfigObj('elements.ini')
+        for e in self.elements:
+            for l in self.lines:
+                self.specs.append(config[e][l])
+        self.specs.append(config[e]['elastic'])
+
     def _init_sim(self, counter):
-        if self.emission_line == 'kb1':
-            e1 = 8905
-            w1 = 3.7
-            e2 = 8910
-            w2 = 3.7
-            phi1 = 46.48
-            phi2 = 46.45
-            darwin = 2.17
-        elif self.emission_line == 'kb5':
-            e1 = 8975
-            e2 = 8985
-            w1 = 3.7
-            w2 = 3.7
-            phi1 = 46.01
-            phi2 = 45.95
-            darwin = 2.13
-        e3 = 9000 #elastic 
-        phi3 = 45.85
-        e_sep = e3-e1
-        e_center = np.round((e1+e3)/2).astype(int)
+        phi1 = float(self.specs[0]['phi'])
+        phi2 = float(self.specs[1]['phi'])
+        E1 = float(self.specs[0]['E'])
+        E2 = float(self.specs[1]['E'])
+        darwin = np.max((float(self.specs[0]['darwin']), float(self.specs[1]['darwin'])))
+  
+        E3 = float(self.specs[-1]['E']) #elastic 
+        phi3 = float(self.specs[-1]['phi'])
+        e_sep = E3 - E1
+        e_center = np.round((E1+E3)/2).astype(int)
         self.lam = self.pixel_size / self.det_distance
         fov = self.lam * self.sample.shape[0]
         kscale = fov
-        self.pix_sep = self.det_distance * np.tan((phi1-phi3)*cp.pi/180) / self.pixel_size
-        self.beta_shift = self.det_distance * np.tan((phi1-phi2)*cp.pi/180) / self.pixel_size
+        self.pix_sep = self.det_distance * np.tan(np.abs(phi1-phi3)*cp.pi/180) / self.pixel_size
+        self.beta_shift = self.det_distance * np.tan(np.abs(phi1-phi2)*cp.pi/180) / self.pixel_size
         self.e_res = (e_sep)/np.round(self.pix_sep)
         self.mode_period = (6200/np.ceil(6200/600)) * 2.17/self.e_res  #pulse duration over energy resolution compared to fabian times tc in attoseconds
         self.deltaE = self.det_distance * (cp.tan((phi1+darwin/3600)*np.pi/180) - cp.tan(phi1*np.pi/180)) / self.pixel_size #uncertainty from darwin plateau in units of pixel
@@ -296,11 +300,14 @@ if __name__ == '__main__':
     det_dist = float(config.get(section, 'det_dist', fallback=1))
     pixel_size = config.getint(section, 'pixel_size', fallback=100)
     line = config.get(section, 'emission_line', fallback='kb1')
-
     det_shape = fshape
     #num_photons = np.ceil(args.photon_density * det_shape[0] * det_shape[1]).astype(int)
  
-    sig = Signal(det_shape=det_shape, binning=binning, num_shots=num_shots, num_photons=num_photons, emission_line=line, noise=noise, efilter=efilter, det_dist=det_dist, pixel_size=pixel_size)
+    elements = [e for e in config.get(section, 'elements').split()]
+    emission_lines = [l for l in config.get(section, 'emission_lines').split()]
+    print('Simulate {} line for {}'.format(emission_lines, elements))
+ 
+    sig = Signal(elements, emission_lines, det_shape=det_shape, binning=binning, num_shots=num_shots, num_photons=num_photons, emission_line=line, noise=noise, efilter=efilter, det_dist=det_dist, pixel_size=pixel_size)
     sig.create_sample()
     sig.sim_glob()
 
