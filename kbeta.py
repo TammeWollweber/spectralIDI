@@ -49,7 +49,10 @@ class Signal():
 
         self.size_em1 = 10
         self.size_em2 = 14
-        self.sample_shape = (192,192)
+        if self.det_distance == 3:
+            self.sample_shape = (160,160)
+        else:
+            self.sample_shape = (192,192)
         #self.size_np = 100e-9 #particle size in m
         self.sample = None
         self.hits = []
@@ -71,6 +74,9 @@ class Signal():
         self.dir = '/mpsd/cni/processed/wittetam/sim/raw/'
         self.num_cores = None
         self.integrated_signal = None
+        self.tau = None
+        self.width = None
+        self.pulse_dur = 6200
         self._init_directory()
         self._init_lines()
 
@@ -94,8 +100,13 @@ class Signal():
         config = ConfigObj('elements.ini')
         for e in self.elements:
             for l in self.lines:
+                print(e,l)
                 self.specs.append(config[e][l])
         self.specs.append(config[e]['elastic'])
+        self.tau = int(config[e]['tau'])
+        self.width = float(config[e]['kalpha2']['w'])
+        print('coherence time, width kalpha2: ', self.tau, self.width)
+
 
     def _init_sim(self, counter):
         phi1 = float(self.specs[0]['phi'])
@@ -114,7 +125,7 @@ class Signal():
         self.pix_sep = self.det_distance * np.tan(np.abs(phi1-phi3)*cp.pi/180) / self.pixel_size
         self.beta_shift = self.det_distance * np.tan(np.abs(phi1-phi2)*cp.pi/180) / self.pixel_size
         self.e_res = (e_sep)/np.round(self.pix_sep)
-        self.mode_period = (6200/np.ceil(6200/600)) * 2.17/self.e_res  #pulse duration over energy resolution compared to fabian times tc in attoseconds
+        self.mode_period = (self.pulse_dur/np.ceil(self.pulse_dur/self.tau)) * self.width/self.e_res  #pulse duration over energy resolution compared to fabian times tc in attoseconds
         self.deltaE = self.det_distance * (cp.tan((phi1+darwin/3600)*np.pi/180) - cp.tan(phi1*np.pi/180)) / self.pixel_size #uncertainty from darwin plateau in units of pixel
         
         if counter == 0:
@@ -304,7 +315,9 @@ if __name__ == '__main__':
     #num_photons = np.ceil(args.photon_density * det_shape[0] * det_shape[1]).astype(int)
  
     elements = [e for e in config.get(section, 'elements').split()]
-    emission_lines = [l for l in config.get(section, 'emission_lines').split()]
+    #emission_lines = [l for l in config.get(section, 'emission_lines').split()]
+    emission_lines = ['kbeta1,3']
+    print('Detector distance: ', det_dist)
     print('Simulate {} line for {}'.format(emission_lines, elements))
  
     sig = Signal(elements, emission_lines, det_shape=det_shape, binning=binning, num_shots=num_shots, num_photons=num_photons, emission_line=line, noise=noise, efilter=efilter, det_dist=det_dist, pixel_size=pixel_size)

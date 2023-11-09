@@ -26,8 +26,8 @@ from cupyx.scipy import signal as cusignal
 from cupyx.scipy import ndimage as cundimage
 plt.ion()
 
-NUM_DEV = 3 
-JOBS_PER_DEV = 3
+NUM_DEV = 1 
+JOBS_PER_DEV = 1
 
 class Signal():  
     def __init__(self, elements, emission_lines, det_shape=(1024,1024), binning=8, num_shots=1000, num_photons=50,
@@ -48,7 +48,7 @@ class Signal():
         self.num_photons = num_photons
 
         self.size_em = 10
-        self.sample_shape = (160,160)
+        self.sample_shape = (80,80)
         self.sample = None
         self.hits = []
         self.hit_size = None
@@ -72,6 +72,10 @@ class Signal():
         self.num_cores = None
         self.integrated_signal = None
         self.incoherent = incoherent
+
+        self.tau = None
+        self.width = None
+        self.pulse_dur = 6200
 
         self._init_directory()
         self._init_lines()
@@ -98,6 +102,10 @@ class Signal():
             for l in self.lines:
                 self.specs.append(config[e][l])
 
+        self.specs.append(config[e]['elastic'])
+        self.tau = int(config[e]['tau'])
+        self.width = float(config[e]['kalpha2']['w'])
+        print('coherence time, width kalpha2: ', self.tau, self.width)
 
     def _init_sim(self, counter):
         phi1 = float(self.specs[0]['phi'])
@@ -115,8 +123,9 @@ class Signal():
         self.xka2 = self.det_shape[1]//2 - self.pix_sep//2
         self.xka1 = self.det_shape[1]//2 + self.pix_sep//2
         self.e_res = (e_sep)/np.round(self.pix_sep)
-        self.mode_period = (6200/np.ceil(6200/600)) * 2.17/self.e_res  #pulse duration over energy resolution compared to fabian times tc in attoseconds
         self.deltaE = self.det_distance * (cp.tan((phi1+darwin/3600)*np.pi/180) - cp.tan(phi1*np.pi/180)) / self.pixel_size #uncertainty from darwin plateau in units of pixel
+        #self.mode_period = (self.pulse_dur/np.ceil(self.pulse_dur/self.tau)) * self.width/self.e_res  #pulse duration over energy resolution compared to fabian times tc in attoseconds
+        self.mode_period = (self.pulse_dur/np.ceil(self.pulse_dur/self.tau)) * self.width/(self.deltaE*self.e_res)  #pulse duration over energy resolution compared to fabian times tc in attoseconds
 
 
         e_range = np.round(self.det_shape[1] * self.e_res).astype(int)
@@ -294,7 +303,9 @@ if __name__ == '__main__':
     #num_photons = np.ceil(args.photon_density * det_shape[0] * det_shape[1]).astype(int)
 
     elements = [e for e in config.get(section, 'elements').split()]
-    emission_lines = [l for l in config.get(section, 'emission_lines').split()]
+    #emission_lines = [l for l in config.get(section, 'emission_lines').split()]
+    emission_lines = ['kalpha1', 'kalpha2']
+
     print('Simulate {} line for {}'.format(emission_lines, elements))
  
     sig = Signal(elements, emission_lines, det_shape=det_shape, binning=binning, num_shots=num_shots, num_photons=num_photons, 
