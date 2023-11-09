@@ -54,8 +54,8 @@ class ProcessCorr():
     def _init_corr(self, min_val=None, max_val=None):
         self.cudark = cp.array(self.np_dark)
         self.cumask = cp.array(self.np_mask)
-        self.corr = cp.zeros((self.num_bins, self.fshape[0]*2-1, self.fshape[1]))
-        self.cross_corr = cp.zeros((self.num_bins, self.fshape[0]*2-1, self.fshape[1]))
+        self.corr = cp.zeros((self.num_bins, self.fshape[0], self.fshape[1]))
+        self.cross_corr = cp.zeros((self.num_bins, self.fshape[0], self.fshape[1]))
         self.integ = cp.zeros((self.num_bins, self.fshape[0], self.fshape[1]))
         self.corrsq = cp.zeros_like(self.corr)
         self.bin_hist = cp.zeros(self.num_bins)
@@ -86,10 +86,10 @@ class ProcessCorr():
         except RuntimeError:
             pass
 
-        corr_arr = mp.Array(ctypes.c_double, num_jobs*self.num_bins*(2*self.fshape[0]-1)*self.fshape[1])
-        cross_corr_arr = mp.Array(ctypes.c_double, num_jobs*self.num_bins*(2*self.fshape[0]-1)*self.fshape[1])
+        corr_arr = mp.Array(ctypes.c_double, num_jobs*self.num_bins*self.fshape[0]*self.fshape[1])
+        cross_corr_arr = mp.Array(ctypes.c_double, num_jobs*self.num_bins*self.fshape[0]*self.fshape[1])
         integ_arr = mp.Array(ctypes.c_double, num_jobs*self.num_bins*int(np.product(self.fshape)))
-        corrsq_arr = mp.Array(ctypes.c_double, num_jobs*self.num_bins*(2*self.fshape[0]-1)*self.fshape[1])
+        corrsq_arr = mp.Array(ctypes.c_double, num_jobs*self.num_bins*self.fshape[0]*self.fshape[1])
         bin_hist_arr = mp.Array(ctypes.c_double, num_jobs*self.num_bins)
         isums_arr = mp.Array(ctypes.c_double, 1000*len(self.flist))
         jobs = [mp.Process(target=self._mp_worker, args=(d, self.flist,
@@ -104,8 +104,8 @@ class ProcessCorr():
 
         self.isums = np.frombuffer(isums_arr.get_obj())
         nframes = self.isums.shape[0]
-        self.corr = np.frombuffer(corr_arr.get_obj()).reshape((num_jobs, self.num_bins) + (2*self.fshape[0]-1, self.fshape[1]))
-        self.cross_corr = np.frombuffer(cross_corr_arr.get_obj()).reshape((num_jobs, self.num_bins) + (2*self.fshape[0]-1, self.fshape[1]))
+        self.corr = np.frombuffer(corr_arr.get_obj()).reshape((num_jobs, self.num_bins) + (self.fshape[0], self.fshape[1]))
+        self.cross_corr = np.frombuffer(cross_corr_arr.get_obj()).reshape((num_jobs, self.num_bins) + (self.fshape[0], self.fshape[1]))
         self.corr = self.corr.sum(0) 
         self.cross_corr = self.cross_corr.sum(0) 
         self.integ = np.frombuffer(integ_arr.get_obj()).reshape((num_jobs, self.num_bins) + self.fshape)
@@ -123,8 +123,8 @@ class ProcessCorr():
         #self._init_corr(min_val=self.min_val, max_val=self.max_val)
         self._init_corr()
         kwargs = {'adu_thresh': adu_thresh, 'norm': norm}
-        mycorr = np.frombuffer(corr_arr.get_obj()).reshape((num_jobs, self.num_bins) + (2*self.fshape[0]-1, self.fshape[1]))
-        mycrosscorr = np.frombuffer(cross_corr_arr.get_obj()).reshape((num_jobs, self.num_bins) + (2*self.fshape[0]-1, self.fshape[1]))
+        mycorr = np.frombuffer(corr_arr.get_obj()).reshape((num_jobs, self.num_bins) + (self.fshape[0], self.fshape[1]))
+        mycrosscorr = np.frombuffer(cross_corr_arr.get_obj()).reshape((num_jobs, self.num_bins) + (self.fshape[0], self.fshape[1]))
         myinteg = np.frombuffer(integ_arr.get_obj()).reshape((num_jobs,self.num_bins) + self.fshape)
         mycorrsq = np.frombuffer(corrsq_arr.get_obj()).reshape((num_jobs,) + mycorr.shape[1:])
     
@@ -186,7 +186,7 @@ class ProcessCorr():
                     continue
 
             isums[n_tot] = isum_tmp 
-            sfr_corr_tmp = cusignal.fftconvolve(sfr_tmp[bin_idx], fr_integ[::-1,:], axes=0)
+            sfr_corr_tmp = cusignal.fftconvolve(sfr_tmp[bin_idx], fr_integ[::-1,:], mode='same', axes=0)
             sfr_tmp[bin_idx] = cp.copy(fr_integ)
 
 
@@ -212,22 +212,21 @@ class ProcessCorr():
             cp.divide(sfr, cundimage.maximum_filter(sfr, 3, mode='constant'), out=sfr)
             #cp.divide(sfr, 9*cundimage.uniform_filter(sfr, 3, mode='constant'), out=sfr)
             sfr[cp.isnan(sfr) | cp.isinf(sfr)] = 0
-        return cusignal.fftconvolve(sfr, sfr[::-1,:], axes=0), sfr
+        return cusignal.fftconvolve(sfr, sfr[::-1,:], mode='same', axes=0), sfr
 
     def norm_corr(self):
         if self.num_bins > 1:
             integ = self.integ*self.np_mask
-            integ_corr = signal.fftconvolve(integ, integ[:,::-1,:], axes=1) 
-            ncorr = ((self.corr - 1/2 * (self.cross_corr + self.cross_corr[:,::-1,::-1]))/ integ_corr).T * self.bin_hist
-            #ncorr = (self.corr/ integ_corr).T * self.bin_hist
+            integ_corr = signal.fftconvolve(integ, integ[:,::-1,:], mode='same', axes=1) 
+            #ncorr = ((self.corr - 1/2 * (self.cross_corr + self.cross_corr[:,::-1,::-1]))/ integ_corr).T * self.bin_hist
+            ncorr = (self.corr/ integ_corr).T * self.bin_hist
             ncorr[np.isnan(ncorr) | np.isinf(ncorr)] = 1
             weights = integ.mean((1,2))**2 * self.bin_hist
             wncorr = (ncorr * weights).T.sum(0) / weights.sum()
             ncorr = wncorr
         else:
-            ncorr = (self.corr[0] - 1/2 * (self.cross_corr[0] + self.cross_corr[0,::-1,:])) / signal.fftconvolve(self.integ[0], self.integ[0,::-1,:], axes=0) 
-            #ncorr = self.corr[0] / signal.fftconvolve(self.integ[0],
-            #                                          self.integ[0][::-1,::-1]) 
+            #ncorr = (self.corr[0] - 1/2 * (self.cross_corr[0] + self.cross_corr[0,::-1,:])) / signal.fftconvolve(self.integ[0], self.integ[0,::-1,:], axes=0) 
+            ncorr = self.corr[0] / signal.fftconvolve(self.integ[0], self.integ[0][::-1,:], mode='same', axes=0) 
             
         #s = int(self.fshape[0]*0.4), int(self.fshape[1]*0.2)
         #e = int(self.fshape[0]*0.6)+1, int(self.fshape[1]*0.8)+1
