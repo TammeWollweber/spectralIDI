@@ -47,12 +47,12 @@ class Signal():
         self.num_photons = num_photons
         self.emission_line = emission_line
 
-        self.size_em1 = 10
-        self.size_em2 = 14
+        self.size_em1 = 5
+        self.size_em2 = 7
         if self.det_distance == 3:
             self.sample_shape = (160,160)
         else:
-            self.sample_shape = (192,192)
+            self.sample_shape = (64,64)
         #self.size_np = 100e-9 #particle size in m
         self.sample = None
         self.hits = []
@@ -139,9 +139,9 @@ class Signal():
         e_range = np.round(self.det_shape[1] * self.e_res).astype(int)
         kvec = np.arange(self.det_shape[0])
         kvec -= self.det_shape[0]//2
-        kscale_corr = 2*np.pi*(np.arange(self.det_shape[1])-self.det_shape[1]//2) * self.e_res/e_center
+        kscale_corr = (np.arange(self.det_shape[1])-self.det_shape[1]//2) * self.e_res/e_center
         kscale_E = kscale * kscale_corr + kscale
-        self.kvector = cp.outer(cp.array(kvec), cp.array(kscale_E)).T
+        self.kvector = cp.outer(cp.array(kvec), cp.array(kscale_E))
         self.sample = cp.array(self.sample)
 
     def create_sample(self):
@@ -221,45 +221,45 @@ class Signal():
         
         pop = self.calc_beam_profile(counter)
         pop_max = cp.round(pop.max()).astype(int)
-        num_modes = len(pop)
+        #num_modes = len(pop)
+        num_modes = 1
         if counter == 0:
             print('num modes: ', num_modes)
 
         diff_pattern = cp.zeros(self.det_shape)
-        indices = cp.tile(cp.random.choice(cp.arange(0,self.sample.shape[0]), size=int(self.p_tot.sum()), p=self.p_tot/self.p_tot.sum()), (self.kvector.shape[0],1)).T
-        ind_inner = cp.tile(cp.random.choice(cp.arange(0,self.sample.shape[0]), size=int(self.p_inner.sum()), p=self.p_inner/self.p_inner.sum()), (self.kvector.shape[0],1)).T
-        ind_outer = cp.tile(cp.random.choice(cp.arange(0,self.sample.shape[0]), size=int(self.p_outer.sum()), p=self.p_outer/self.p_outer.sum()), (self.kvector.shape[0],1)).T
+        indices = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=int(self.p_tot.sum()), p=self.p_tot/self.p_tot.sum())
+        ind_inner = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=int(self.p_inner.sum()), p=self.p_inner/self.p_inner.sum())
+        ind_outer = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=int(self.p_outer.sum()), p=self.p_outer/self.p_outer.sum())
 
-        r_k_el = cp.matmul(indices,self.kvector)/self.kvector.shape[1] #correct for broadcasting factor
-        r_k1 = cp.matmul(ind_inner,self.kvector)/self.kvector.shape[1] # shape = (num_emitter, kshape[1])
-        r_k2 = cp.matmul(ind_outer,self.kvector)/self.kvector.shape[1]
-
-        phases_fl_inner = cp.array(cp.random.random(size=(1, num_modes, ind_inner.shape[0]))*2*cp.pi) #shape = (1, num_modes, num_emitter) 
-        phases_fl_outer = cp.array(cp.random.random(size=(1, num_modes, ind_outer.shape[0]))*2*cp.pi)
+        r_k_el = cp.outer(indices,self.kvector).reshape(-1, self.kvector.shape[0], self.kvector.shape[1])
+        r_k1 = cp.outer(ind_inner,self.kvector).reshape(-1, self.kvector.shape[0], self.kvector.shape[1])
+        r_k2 = cp.outer(ind_outer,self.kvector).reshape(-1, self.kvector.shape[0], self.kvector.shape[1])
+        phases_fl_inner = cp.array(cp.random.random(size=(num_modes, ind_inner.shape[0]))) #shape = (1, num_modes, num_emitter) 
+        phases_fl_outer = cp.array(cp.random.random(size=(num_modes, ind_outer.shape[0])))
         phases_el = cp.zeros((1, num_modes, indices.shape[0]))
 
-        psi_fl_inner = cp.exp(1j*(r_k1[:,:,cp.newaxis].transpose(1,2,0)+phases_fl_inner)).sum(-1) # sum over all emitter
-        psi_fl_outer = cp.exp(1j*(r_k2[:,:,cp.newaxis].transpose(1,2,0)+phases_fl_outer)).sum(-1)
-        psi_el = cp.exp(1j*(r_k_el[:,:,cp.newaxis].transpose(1,2,0)+phases_el)).sum(-1)
+        psi_fl_inner = cp.exp(1j*2*cp.pi*(r_k1[:,:,:,cp.newaxis].transpose(1,2,3,0)+phases_fl_inner)).sum(-1)
+        psi_fl_outer = cp.exp(1j*2*cp.pi*(r_k2[:,:,:,cp.newaxis].transpose(1,2,3,0)+phases_fl_outer)).sum(-1)
+        psi_el = cp.exp(1j*2*cp.pi*(r_k_el[:,:,:,cp.newaxis].transpose(1,2,3,0)+phases_el)).sum(-1)
 
-        psi_fl_inner *= (pop / pop_max)
-        psi_fl_outer *= (pop / pop_max)
-        psi_el *= pop / pop_max
+        #psi_fl_inner *= (pop / pop_max)
+        #psi_fl_outer *= (pop / pop_max)
+        #psi_el *= pop / pop_max
 
         int_fl_inner = cp.abs(psi_fl_inner)**2 
         int_fl_outer = cp.abs(psi_fl_outer)**2 
         int_el = cp.abs(psi_el)**2 
 
-        int2d_fl_inner = (int_fl_inner.transpose(1,0)[:,:,cp.newaxis]).sum(0) * kbeta1[cp.newaxis,:] # sum over all modes
-        int2d_fl_outer = (int_fl_outer.transpose(1,0)[:,:,cp.newaxis]).sum(0) * kbeta2[cp.newaxis,:]
-        int2d_el = (int_el.transpose(1,0)[:,:,cp.newaxis]).sum(0) * elastic[cp.newaxis,:]
+        int2d_fl_inner = int_fl_inner.sum(-1) * kbeta1[cp.newaxis,:] # sum over all modes
+        int2d_fl_outer = int_fl_outer.sum(-1) * kbeta2[cp.newaxis,:]
+        int2d_el = int_el.sum(-1) * elastic[cp.newaxis,:]
 
         mode_fl = int2d_fl_inner + int2d_fl_outer
         mode_fl *= self.num_photons / mode_fl.sum()
         int_tot = mode_fl + int2d_el * 0.1 * self.num_photons / int2d_el.sum()
         #int_tot = mode_fl + int2d_el * 10 * self.num_photons / int2d_el.sum()
         if self.efilter:
-            int_filter = cundimage.gaussian_filter(int_tot, sigma=(0, self.deltaE), mode='constant')
+            int_filter = cundimage.gaussian_filter(int_tot, sigma=(0, self.deltaE), mode='reflect')
         else:
             int_filter = int_tot
         int_p = cp.random.poisson(cp.abs(int_filter),size=self.det_shape)
