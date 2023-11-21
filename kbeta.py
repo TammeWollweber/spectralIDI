@@ -137,11 +137,8 @@ class Signal():
         self.xkb2 = self.det_shape[1]//2 - self.pix_sep//2 + self.beta_shift
         self.xkel = self.det_shape[1]//2 + self.pix_sep//2
         e_range = np.round(self.det_shape[1] * self.e_res).astype(int)
-        kvec = np.arange(self.det_shape[0])
-        kvec -= self.det_shape[0]//2
-        kscale_corr = (np.arange(self.det_shape[1])-self.det_shape[1]//2) * self.e_res/e_center
-        kscale_E = kscale * kscale_corr + kscale
-        self.kvector = cp.outer(cp.array(kvec), cp.array(kscale_E))
+        kvec = cp.arange(self.det_shape[0]) - self.det_shape[0]//2
+        self.kvector = kvec * kscale
         self.sample = cp.array(self.sample)
 
     def create_sample(self):
@@ -156,8 +153,8 @@ class Signal():
         m_inner[r<self.size_em1] = 1
         m_outer[(r<self.size_em2) & (r>=self.size_em1)] = 1
         m_tot[self.sample!=0] = 1
-        self.p_inner = (2*np.sqrt(np.abs(self.size_em1**2-r**2)*m_inner)).sum(-1)
-        self.p_tot = (2*np.sqrt(np.abs(self.size_em2**2-r**2)*m_tot)).sum(-1)
+        self.p_inner = (2*np.sqrt(np.abs(self.size_em1**2-r**2)*m_inner)).sum(-1).astype('f4')
+        self.p_tot = (2*np.sqrt(np.abs(self.size_em2**2-r**2)*m_tot)).sum(-1).astype('f4')
         self.p_outer = self.p_tot - self.p_inner
         print('inner weight: ', self.p_inner.sum())
         print('outer weight: ', self.p_outer.sum())
@@ -190,7 +187,6 @@ class Signal():
         devnum = rank // JOBS_PER_DEV
         cp.cuda.Device(devnum).use()
 
-        data_arr = mp.Array(ctypes.c_double, self.shots_per_file)
         num_files = np.ceil(self.num_shots / self.shots_per_file).astype(int)
         stime = time.time()
         for i, _ in enumerate(np.arange(num_files)[rank::num_jobs]):
@@ -221,30 +217,30 @@ class Signal():
         
         pop = self.calc_beam_profile(counter)
         pop_max = cp.round(pop.max()).astype(int)
-        #num_modes = len(pop)
-        num_modes = 1
+        num_modes = len(pop)
         if counter == 0:
             print('num modes: ', num_modes)
 
         diff_pattern = cp.zeros(self.det_shape)
-        indices = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=int(self.p_tot.sum()), p=self.p_tot/self.p_tot.sum())
-        ind_inner = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=int(self.p_inner.sum()), p=self.p_inner/self.p_inner.sum())
-        ind_outer = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=int(self.p_outer.sum()), p=self.p_outer/self.p_outer.sum())
+        indices = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=int(self.p_tot.sum()), p=self.p_tot/self.p_tot.sum()).astype('u2')
+        ind_inner = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=int(self.p_inner.sum()), p=self.p_inner/self.p_inner.sum()).astype('u2')
+        ind_outer = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=int(self.p_outer.sum()), p=self.p_outer/self.p_outer.sum()).astype('u2')
 
-        r_k_el = cp.outer(indices,self.kvector).reshape(-1, self.kvector.shape[0], self.kvector.shape[1])
-        r_k1 = cp.outer(ind_inner,self.kvector).reshape(-1, self.kvector.shape[0], self.kvector.shape[1])
-        r_k2 = cp.outer(ind_outer,self.kvector).reshape(-1, self.kvector.shape[0], self.kvector.shape[1])
-        phases_fl_inner = cp.array(cp.random.random(size=(num_modes, ind_inner.shape[0]))) #shape = (1, num_modes, num_emitter) 
-        phases_fl_outer = cp.array(cp.random.random(size=(num_modes, ind_outer.shape[0])))
-        phases_el = cp.zeros((1, num_modes, indices.shape[0]))
+        r_k_el = cp.outer(indices,self.kvector)
+        r_k1 = cp.outer(ind_inner,self.kvector)
+        r_k2 = cp.outer(ind_outer,self.kvector)
+        phases_fl_inner = cp.array(cp.random.random(size=(num_modes, ind_inner.shape[0]))).astype('f4')
 
-        psi_fl_inner = cp.exp(1j*2*cp.pi*(r_k1[:,:,:,cp.newaxis].transpose(1,2,3,0)+phases_fl_inner)).sum(-1)
-        psi_fl_outer = cp.exp(1j*2*cp.pi*(r_k2[:,:,:,cp.newaxis].transpose(1,2,3,0)+phases_fl_outer)).sum(-1)
-        psi_el = cp.exp(1j*2*cp.pi*(r_k_el[:,:,:,cp.newaxis].transpose(1,2,3,0)+phases_el)).sum(-1)
+        phases_fl_outer = cp.array(cp.random.random(size=(num_modes, ind_outer.shape[0]))).astype('f4')
+        phases_el = cp.zeros((1, num_modes, indices.shape[0])).astype('f4')
 
-        #psi_fl_inner *= (pop / pop_max)
-        #psi_fl_outer *= (pop / pop_max)
-        #psi_el *= pop / pop_max
+        psi_fl_inner = cp.exp(1j*2*cp.pi*(r_k1[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_fl_inner)).sum(-1)
+        psi_fl_outer = cp.exp(1j*2*cp.pi*(r_k2[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_fl_outer)).sum(-1)
+        psi_el = cp.exp(1j*2*cp.pi*(r_k_el[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_el)).sum(-1)
+
+        psi_fl_inner *= (pop / pop_max)
+        psi_fl_outer *= (pop / pop_max)
+        psi_el *= pop / pop_max
 
         int_fl_inner = cp.abs(psi_fl_inner)**2 
         int_fl_outer = cp.abs(psi_fl_outer)**2 

@@ -128,14 +128,10 @@ class Signal():
         self.mode_period = (self.pulse_dur/np.ceil(self.pulse_dur/self.tau)) * self.width/(self.deltaE*self.e_res)  #pulse duration over energy resolution compared to fabian times tc in attoseconds
 
 
-        e_range = np.round(self.det_shape[1] * self.e_res).astype(int)
-        kvec = np.arange(self.det_shape[0])
-        kvec -= self.det_shape[0]//2
+        e_range = cp.round(self.det_shape[1] * self.e_res).astype(int)
+        kvec = cp.arange(self.det_shape[0]) - self.det_shape[0]//2
 
-        kscale_corr = (np.arange(self.det_shape[1])-self.det_shape[1]//2) * self.e_res/e_center
-        kscale_E = kscale_1d * kscale_corr + kscale_1d
-        self.kvector = cp.outer(cp.array(kvec), cp.array(kscale_E))
-        #self.kvector = cp.outer(cp.array(kvec), cp.ones_like(kscale_2d)*kscale_1d)
+        self.kvector = kvec * kscale_1d
         self.sample = cp.array(self.sample)
         self.psample = cp.array(self.psample)
         if counter == 0:
@@ -214,40 +210,33 @@ class Signal():
         pop = self.calc_beam_profile(counter)
         pop_max = cp.round(pop.max()).astype(int)
         num_modes = len(pop)
-        num_modes = 1
         if counter == 0:
             print('num modes: ', num_modes)
 
         diff_pattern = cp.zeros(self.det_shape)
         indices = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=int(self.psample.sum()), p=self.psample/self.psample.sum())
-        r_k = cp.outer(indices,self.kvector).reshape(-1, self.kvector.shape[0], self.kvector.shape[1])
+        r_k = cp.outer(indices,self.kvector)
         if self.incoherent:
             phases_rand = cp.array(cp.random.random(size=(2, num_modes, indices.shape[0])))
         else:
             phases_rand = cp.zeros((2, num_modes, indices.shape[0]))
 
-        psi = cp.exp(1j*2*cp.pi*(r_k[:,:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,4,0)+phases_rand)).sum(-1)
+        psi = cp.exp(1j*2*cp.pi*(r_k[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_rand)).sum(-1)
 
-        #psi *= (pop / pop_max)/2
+        psi *= (pop / pop_max)/2
 
         if self.alpha_modes == 1:
-            #psi_spec = (psi.mean(2).transpose(0,2,1) * cp.ones((1, self.det_shape[1]))).transpose(1,0,2)
-            psi_spec = (psi.mean(2).transpose(0,2,1) * spectrum[np.newaxis,:]).transpose(1,0,2)
-
+            psi_spec = (psi.mean(1).transpose(1,0)[:,:,cp.newaxis] * spectrum[cp.newaxis,:])
             mode_int = cp.abs(psi_spec)**2
             int_tot = mode_int.sum(0)
 
         elif self.alpha_modes == 2:
-            #psi_spec = (psi.transpose(0,2,3,1) * cp.ones_like(kspec[:,cp.newaxis,:])).transpose(1,0,3,2)
-            psi_spec = (psi.transpose(0,2,3,1) * kspec[:,cp.newaxis,:]).transpose(1,0,3,2)
-
-
+            psi_spec = (psi.T[:,:,:,cp.newaxis] * kspec[cp.newaxis,cp.newaxis,:,:].transpose(0,2,1,3)).transpose(0,2,3,1)
             mode_int = cp.abs(psi_spec)**2
             int_tot = mode_int.sum(0).mean(-1)
         
         elif self.alpha_modes == 3:
-            #psi_spec = (psi.transpose(0,2,3,1) * cp.ones_like(kspec[cp.newaxis,:])).transpose(1,0,3,2)
-            psi_spec = (psi.transpose(0,2,3,1) * kspec[cp.newaxis,:]).transpose(1,0,3,2)
+            psi_spec = (psi.T[:,:,:,cp.newaxis] * kspec[cp.newaxis,cp.newaxis,:,:].transpose(0,2,1,3)).transpose(0,2,3,1)
             
             beat_phases = (cp.arange(num_modes) * self.mode_period/self.beat_period * 2*cp.pi) % (2*cp.pi)
             psi2d_beat = 1/2 * (psi_spec[:,:,:,0] + (psi_spec[:,:,:,1].T * cp.exp(1j*beat_phases)).T)
