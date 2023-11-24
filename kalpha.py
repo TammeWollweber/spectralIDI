@@ -39,6 +39,7 @@ class Signal():
 
         self.det_shape = tuple(np.array(det_shape) // binning)
         print('det_shape: ', self.det_shape)        
+        print('alpha mode: ', alpha_modes)
         self.binning = binning
         self.offset = self.det_shape[0]//2
         self.det_distance = det_dist
