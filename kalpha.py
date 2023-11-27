@@ -26,12 +26,12 @@ from cupyx.scipy import signal as cusignal
 from cupyx.scipy import ndimage as cundimage
 plt.ion()
 
-NUM_DEV = 1 
+NUM_DEV = 1
 JOBS_PER_DEV = 1
 
 class Signal():  
     def __init__(self, elements, emission_lines, det_shape=(1024,1024), binning=8, num_shots=1000, num_photons=50,
-                 noise=60, incoherent=False, efilter=False, alpha_modes=2, det_dist=4, pixel_size=100):
+                 noise=60, incoherent=False, efilter=False, alpha_modes=2, det_dist=4, pixel_size=100, fov=20):
 
         self.elements = elements
         self.lines = emission_lines
@@ -49,7 +49,7 @@ class Signal():
         self.num_photons = num_photons
 
         self.size_em = 5
-        self.sample_shape = (20,20)
+        self.sample_shape = (fov, fov)
         self.sample = None
         self.hits = []
         self.hit_size = None
@@ -301,6 +301,7 @@ if __name__ == '__main__':
     det_dist = config.getfloat(section, 'det_dist', fallback=1.)
     print(det_dist)
     pixel_size = config.getint(section, 'pixel_size', fallback=100)
+    fov = config.getint(section, 'fov', fallback=20)
     det_shape = fshape
     #num_photons = np.ceil(args.photon_density * det_shape[0] * det_shape[1]).astype(int)
 
@@ -311,7 +312,7 @@ if __name__ == '__main__':
     print('Simulate {} line for {}'.format(emission_lines, elements))
  
     sig = Signal(elements, emission_lines, det_shape=det_shape, binning=binning, num_shots=num_shots, num_photons=num_photons, 
-                 noise=noise, incoherent=incoherent, efilter=efilter, alpha_modes=alpha, det_dist=det_dist, pixel_size=pixel_size)
+                 noise=noise, incoherent=incoherent, efilter=efilter, alpha_modes=alpha, det_dist=det_dist, pixel_size=pixel_size, fov=fov)
     sig.create_sample()
     sig.sim_glob()
 

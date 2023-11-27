@@ -31,7 +31,7 @@ JOBS_PER_DEV = 1
 
 class Signal():  
     def __init__(self, elements, lines, det_shape=(1024,1024), binning=8, num_shots=1000, num_photons=50,
-                 emission_line='kb1', noise=60, efilter=False, det_dist=4, pixel_size=100):
+                 emission_line='kb1', noise=60, efilter=False, det_dist=4, pixel_size=100, fov=10):
 
         self.elements = elements
         self.lines = lines
@@ -49,10 +49,7 @@ class Signal():
 
         self.size_em1 = 5
         self.size_em2 = 7
-        if self.det_distance == 3:
-            self.sample_shape = (160,160)
-        else:
-            self.sample_shape = (64,64)
+        self.sample_shape = (fov,fov)
         #self.size_np = 100e-9 #particle size in m
         self.sample = None
         self.hits = []
@@ -306,6 +303,7 @@ if __name__ == '__main__':
     efilter = config.getboolean(section, 'filter', fallback=True)
     det_dist = float(config.get(section, 'det_dist', fallback=1))
     pixel_size = config.getint(section, 'pixel_size', fallback=100)
+    fov = config.getint(section, 'fov', fallback=160)
     line = config.get(section, 'emission_line', fallback='kb1')
     det_shape = fshape
     #num_photons = np.ceil(args.photon_density * det_shape[0] * det_shape[1]).astype(int)
@@ -316,7 +314,7 @@ if __name__ == '__main__':
     print('Detector distance: ', det_dist)
     print('Simulate {} line for {}'.format(emission_lines, elements))
  
-    sig = Signal(elements, emission_lines, det_shape=det_shape, binning=binning, num_shots=num_shots, num_photons=num_photons, emission_line=line, noise=noise, efilter=efilter, det_dist=det_dist, pixel_size=pixel_size)
+    sig = Signal(elements, emission_lines, det_shape=det_shape, binning=binning, num_shots=num_shots, num_photons=num_photons, emission_line=line, noise=noise, efilter=efilter, det_dist=det_dist, pixel_size=pixel_size, fov=fov)
     sig.create_sample()
     sig.sim_glob()
 

@@ -41,6 +41,47 @@ def rad_2d(data, center):
 def rotate(corr, angle=12):
     return ndi.rotate(corr, angle, order=1, reshape=False)
 
+def get_zscore(integ, ucorr, ucorrsq, isums, cmask=None):
+    noise = np.sqrt(ucorrsq-ucorr**2)
+    cinteg = signal.fftconvolve(integ, integ[::-1,::-1], mode='same')
+    if cmask is None:
+        cmask = cinteg > 20
+    zscore = (corr-np.nanmedian(corr[cmask])) / (noise/cinteg/isums.shape[0]**0.5)
+    zscore[~cmask] = 0
+    zscore[np.isnan(zscore) | np.isinf(zscore)] = 0
+    return zscore
+
+
+def get_zscore_1d(integ, ucorr, ucorrsq, isums, cmask=None):
+    noise = np.sqrt(ucorrsq-ucorr**2)
+    cinteg = signal.fftconvolve(integ, integ[::-1,:], mode='same', axes=0)
+    if cmask is None:
+        cmask = cinteg>20
+    zscore = (corr-np.nanmedian(corr[cmask])) / (noise/cinteg/isums.shape[0]**0.5)
+    zscore[~cmask] = 0
+    zscore[np.isnan(zscore) | np.isinf(zscore)] = 0
+    return zscore
+
+
+def load_file(exp='231127', oned=True, r=0):
+    if oned:
+        fname = 'data/{}_Run{}_1d.h5'.format(exp,r)
+    else:
+        fname = 'data/{}_Run{}.h5'.format(exp,r)
+    with h5.File(fname, 'r') as f:
+        integ = f['integ_frame'][:]
+        corr = f['normalized_corr'][:]
+        numr = f['corr_numr'][:]
+        ucorrsq = f['corrsq_numr'][:]
+        isums = f['frame_sums'][:]
+    print('mean: ', np.nanmean(corr))
+    if oned:
+        zscore = get_zscore_1d(integ, numr, ucorrsq,isums)
+    else:
+        zscore = get_zscore(integ, numr, ucorrsq, isums)
+    return integ, corr-1, zscore, numr, isums
+
+
 def calc_diff(corr, theta=55, p_width=1):
     cen = np.array(corr.shape)//2
     c = np.copy(corr)
