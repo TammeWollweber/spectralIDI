@@ -50,7 +50,6 @@ class Signal():
         self.size_em1 = 5
         self.size_em2 = 7
         self.sample_shape = (fov,fov)
-        #self.size_np = 100e-9 #particle size in m
         self.sample = None
         self.hits = []
         self.hit_size = None
@@ -249,8 +248,8 @@ class Signal():
 
         mode_fl = int2d_fl_inner + int2d_fl_outer
         mode_fl *= self.num_photons / mode_fl.sum()
-        int_tot = mode_fl + int2d_el * 0.1 * self.num_photons / int2d_el.sum()
-        #int_tot = mode_fl + int2d_el * 10 * self.num_photons / int2d_el.sum()
+        #int_tot = mode_fl + int2d_el * 0.1 * self.num_photons / int2d_el.sum()
+        int_tot = mode_fl + int2d_el * 10 * self.num_photons / int2d_el.sum()
         if self.efilter:
             int_filter = cundimage.gaussian_filter(int_tot, sigma=(0, self.deltaE), mode='reflect')
         else:

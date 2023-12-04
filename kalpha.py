@@ -26,7 +26,7 @@ from cupyx.scipy import signal as cusignal
 from cupyx.scipy import ndimage as cundimage
 plt.ion()
 
-NUM_DEV = 1
+NUM_DEV = 2
 JOBS_PER_DEV = 1
 
 class Signal():  
@@ -107,6 +107,7 @@ class Signal():
         self.tau = int(config[e]['tau'])
         self.width = float(config[e]['kalpha2']['w'])
         print('coherence time, width kalpha2: ', self.tau, self.width)
+        print(self.specs)
 
     def _init_sim(self, counter):
         phi1 = float(self.specs[0]['phi'])
@@ -136,6 +137,7 @@ class Signal():
         self.sample = cp.array(self.sample)
         self.psample = cp.array(self.psample)
         if counter == 0:
+            print('cen, pix_sep: ', e_center, self.pix_sep)
             print('eres: ', self.e_res)
             print('mode_period: ', self.mode_period)
             print('dE [eV], [pix]: ', self.deltaE*self.e_res, self.deltaE)

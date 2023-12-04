@@ -278,7 +278,7 @@ def main():
             print('Processing run %s:%d' % (exp, r))
             data_glob = '/mpsd/cni/processed/wittetam/sim/raw/%s/Run%d_*.npy' % (exp, r)
             output_fname = 'data/%s_Run%d' % (exp,r)
-            output_fname += '.h5'
+            output_fname += '_roll.h5'
             print('Writing output to', output_fname)
 
             flist = natsort.natsorted(glob.glob(data_glob))
