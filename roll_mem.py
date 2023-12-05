@@ -45,18 +45,19 @@ class ProcessCorr():
         self.min_val = None
         self.max_val = None
         self.mean_shot = None
-        self.frames_per_file = 32
         self.np_dark = np.zeros(self.fshape)
-
+        self.frames_per_file = 1000
+            
     def _init_corr(self, min_val=None, max_val=None):
         self.cudark = cp.array(self.np_dark)
         self.cumask = cp.array(self.np_mask)
-        self.corr = cp.zeros((self.fshape[0], 3*self.fshape[1], 2*self.fshape[1])).astype('f4')
+        self.corr = cp.zeros((self.fshape[0], self.fshape[1], 2*self.fshape[1])).astype('f4')
         #self.corr = cp.zeros((self.fshape[0], self.fshape[1], self.fshape[1])).astype('f4')
         self.integ = cp.zeros((self.fshape[0], self.fshape[1])).astype('f4')
         #self.corrsq = cp.zeros_like(self.corr)
 
         self._init_flist(min_val, max_val)
+
 
     def _init_flist(self, min_val=None, max_val=None):
         if self.min_val is None and self.max_val is None:
@@ -81,10 +82,8 @@ class ProcessCorr():
         except RuntimeError:
             pass
 
-        corr_arr = mp.Array(ctypes.c_float, num_jobs*self.fshape[0]*self.fshape[1]*3*self.fshape[1]*2)
-        #corr_arr = mp.Array(ctypes.c_float, num_jobs*self.fshape[0]*self.fshape[1]*self.fshape[1])
+        corr_arr = mp.Array(ctypes.c_float, num_jobs*self.fshape[0]*self.fshape[1]*self.fshape[1]*2)
         integ_arr = mp.Array(ctypes.c_float, num_jobs*int(np.product(self.fshape)))
-        #corrsq_arr = mp.Array(ctypes.c_double, num_jobs*self.num_bins*self.fshape[0]*self.fshape[1]*2*self.fshape[1])
         isums_arr = mp.Array(ctypes.c_float, 1000*len(self.flist))
         jobs = [mp.Process(target=self._mp_worker, args=(d, self.flist,
                                                          corr_arr,
@@ -97,13 +96,10 @@ class ProcessCorr():
 
         self.isums = np.frombuffer(isums_arr.get_obj(), dtype='f4')
         nframes = self.isums.shape[0]
-        self.corr = np.frombuffer(corr_arr.get_obj(), dtype='f4').reshape((num_jobs,) + (self.fshape[0], self.fshape[1]*3, 2*self.fshape[1]))
-        #self.corr = np.frombuffer(corr_arr.get_obj(), dtype='f4').reshape((num_jobs,) + (self.fshape[0], self.fshape[1], self.fshape[1]))
+        self.corr = np.frombuffer(corr_arr.get_obj(), dtype='f4').reshape((num_jobs,) + (self.fshape[0], self.fshape[1], 2*self.fshape[1]))
         self.corr = self.corr.sum(0) 
         self.integ = np.frombuffer(integ_arr.get_obj(), dtype='f4').reshape((num_jobs,) + self.fshape)
         self.integ = self.integ.sum(0)
-        #self.corrsq = np.frombuffer(corrsq_arr.get_obj()).reshape((num_jobs,) + self.corr.shape)
-        #self.corrsq = self.corrsq.sum(0) 
 
     def _mp_worker(self, rank, flist, corr_arr, integ_arr, isums_arr, adu_thresh, norm):
         num_jobs = NUM_DEV * JOBS_PER_DEV
@@ -111,24 +107,16 @@ class ProcessCorr():
         cp.cuda.Device(devnum).use()
         self._init_corr()
         kwargs = {'adu_thresh': adu_thresh, 'norm': norm}
-        mycorr = np.frombuffer(corr_arr.get_obj(), dtype='f4').reshape((num_jobs,) + (self.fshape[0], self.fshape[1]*3, 2*self.fshape[1]))
-        #mycorr = np.frombuffer(corr_arr.get_obj(), dtype='f4').reshape((num_jobs,) + (self.fshape[0], self.fshape[1], self.fshape[1]))
+        mycorr = np.frombuffer(corr_arr.get_obj(), dtype='f4').reshape((num_jobs,) + (self.fshape[0], self.fshape[1], 2*self.fshape[1]))
         myinteg = np.frombuffer(integ_arr.get_obj(), dtype='f4').reshape((num_jobs,) + self.fshape)
-        #mycorrsq = np.frombuffer(corrsq_arr.get_obj()).reshape((num_jobs,) + mycorr.shape[1:])
     
         stime = time.time()
-        #counter = 1
-        
         for i, fname in enumerate(flist[rank::num_jobs]):
             self._proc_file(fname, i*num_jobs+rank, isums_arr, **kwargs)
             if rank == 0:
                 sys.stderr.write(',  %.3f s/file\n' % ((time.time()-stime) / (i+1)))
         mycorr[rank] += self.corr.get()
         myinteg[rank] += self.integ.get()
-        #mycorrsq[rank] += self.corrsq.get()
-            #if ((i+1) * num_jobs) % self.frames_per_file:
-            #    self.save_corr(idx=counter)
-            #    counter += 1
 
     def _proc_file(self, fname, fnum, isums, **kwargs):
         if self.np_dark is None:
@@ -164,14 +152,13 @@ class ProcessCorr():
 
             self.corr += fr_corr
             self.integ += fr_integ
-            #self.corrsq[bin_idx] += cp.square(fr_corr)
             if fnum % num_jobs == 0:
                 sys.stderr.write('\r%s: %d'%(fname, n))
             n += 1
         fptr.close()
 
     def _proc_frame(self, frame_cpu, adu_thresh=120, norm=True):
-        sfr = cp.array(frame_cpu.reshape(self.fshape)) - self.cudark
+        sfr = (cp.array(frame_cpu.reshape(self.fshape)) - self.cudark).astype('f4')
 
         npix = self.fshape[0] * self.fshape[1]
         bsize = npix // 32 + 1
@@ -180,32 +167,32 @@ class ProcessCorr():
             cp.divide(sfr, cundimage.maximum_filter(sfr, 3, mode='constant'), out=sfr)
             sfr[cp.isnan(sfr) | cp.isinf(sfr)] = 0
         sfr_3d = cp.repeat(sfr[:,:,cp.newaxis], sfr.shape[1]*2, axis=2)
-        sfr_pad = cp.pad(sfr_3d, ((0,0), (sfr.shape[1], sfr.shape[1]), (0,0)), mode='constant')
+        sfr_3d = cp.pad(sfr_3d, ((0,0), (sfr.shape[1], sfr.shape[1]), (0,0)), mode='constant')
         #corr_3d = cp.zeros((sfr.shape[0], sfr.shape[1], sfr.shape[1])).astype('f4')
-        sfr_shifted = self.shift_arr(sfr_pad)
-        corr_3d = cusignal.fftconvolve(sfr_pad, sfr_shifted[::-1,:,:], mode='same', axes=0)
+        sfr_shifted = self.shift_arr(sfr_3d)
+        corr_3d = cusignal.fftconvolve(sfr_3d[:, self.fshape[1]:-self.fshape[1],:], sfr_shifted[::-1,self.fshape[1]:-self.fshape[1],:], mode='same', axes=0)
         #for i in range(-corr_3d.shape[-1]//2, corr_3d.shape[-1]//2):
         #    corr_3d[:,:,i+corr_3d.shape[-1]//2] = cusignal.fftconvolve(sfr, cundimage.shift(sfr, (0,i), mode='constant')[::-1,:], mode='same', axes=0)
 
         return corr_3d, sfr
 
     def shift_arr(self,a):
-        ridx, cidx, _ = cp.ogrid[:a.shape[0], :a.shape[1], :1]
+        ridx, cidx, zidx = cp.ogrid[:a.shape[0], :a.shape[1], :1]
         zidx = cp.ones(a.shape[2])[cp.newaxis, cp.newaxis, :].astype(int) * a.shape[2]//2
         shifts = cp.arange(a.shape[2], 2*a.shape[2])
-        cidx_new = (cidx - shifts[cp.newaxis, cp.newaxis, :])
-        a_shifted = a[ridx, cidx_new, zidx]
+        cidx = (cidx - shifts[cp.newaxis, cp.newaxis, :])
+        a_shifted = a[ridx, cidx, zidx]
         return a_shifted
 
     def norm_corr(self):
         integ = cp.array(self.integ)
         integ_3d = cp.repeat(integ[:,:,cp.newaxis], integ.shape[1]*2, axis=2).astype('f4')
-        integ_pad = cp.pad(integ_3d, ((0,0), (integ.shape[1],integ.shape[1]), (0,0)), mode='constant')
-        integ_shifted = self.shift_arr(integ_pad)
-        cinteg = cusignal.fftconvolve(integ_pad, integ_shifted[::-1,:,:], mode='same', axes=0)
+        integ_3d = cp.pad(integ_3d, ((0,0), (integ.shape[1],integ.shape[1]), (0,0)), mode='constant')
+        integ_shifted = self.shift_arr(integ_3d)
+        integ_3d = cusignal.fftconvolve(integ_3d[:, self.fshape[1]:-self.fshape[1], :], integ_shifted[::-1, self.fshape[1]:-self.fshape[1], :], mode='same', axes=0) 
         #for i in range(-integ.shape[-1]//2, integ.shape[-1]//2):
         #    cinteg[:,:,i+integ.shape[-1]//2] = cusignal.fftconvolve(integ, cundimage.shift(integ, (0,i))[::-1,:], mode='same', axes=0)
-        ncorr = self.corr / cinteg.get()
+        ncorr = self.corr / integ_3d.get()
         return ncorr
 
     def save_corr(self, idx=None):
