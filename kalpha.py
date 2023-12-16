@@ -26,12 +26,12 @@ from cupyx.scipy import signal as cusignal
 from cupyx.scipy import ndimage as cundimage
 plt.ion()
 
-NUM_DEV = 2
+NUM_DEV = 1
 JOBS_PER_DEV = 1
 
 class Signal():  
     def __init__(self, elements, emission_lines, det_shape=(1024,1024), binning=8, num_shots=1000, num_photons=50,
-                 noise=60, incoherent=False, efilter=False, alpha_modes=2, det_dist=4, pixel_size=100, fov=20):
+                 noise=60, incoherent=False, efilter=False, alpha_modes=2, det_dist=4, pixel_size=100,particle_size=350):
 
         self.elements = elements
         self.lines = emission_lines
@@ -48,8 +48,8 @@ class Signal():
         self.alpha_modes = alpha_modes
         self.num_photons = num_photons
 
-        self.size_em = 5
-        self.sample_shape = (fov, fov)
+        self.size_em = 21
+        self.sample_shape = (64, 64)
         self.sample = None
         self.hits = []
         self.hit_size = None
@@ -77,6 +77,10 @@ class Signal():
         self.tau = None
         self.width = None
         self.pulse_dur = 6200
+        self.lam = 0.21e-9
+        self.particle_size = particle_size * 1e-9
+        self.rpix_size = None
+        self.rscale = None
 
         self._init_directory()
         self._init_lines()
@@ -117,9 +121,10 @@ class Signal():
         darwin = np.max((float(self.specs[0]['darwin']), float(self.specs[1]['darwin'])))
         e_sep = E1 - E2
         e_center = np.round((E1 + E2)/2).astype(int)
-        self.lam = self.pixel_size / self.det_distance
-        fov = self.lam * self.sample.shape[0]
-        kscale_1d = fov
+
+        N = self.det_distance / self.pixel_size
+        self.rpix_size = self.particle_size / (self.size_em*2)
+        self.rscale = (self.rpix_size/self.lam) / N
 
         self.pix_sep = self.det_distance * np.tan(np.abs(phi1-phi2)*cp.pi/180) / self.pixel_size
         self.xka2 = self.det_shape[1]//2 - self.pix_sep//2
@@ -131,12 +136,12 @@ class Signal():
 
 
         e_range = cp.round(self.det_shape[1] * self.e_res).astype(int)
-        kvec = cp.arange(self.det_shape[0]) - self.det_shape[0]//2
+        self.kvector = cp.arange(self.det_shape[0]) - self.det_shape[0]//2
 
-        self.kvector = kvec * kscale_1d
         self.sample = cp.array(self.sample)
         self.psample = cp.array(self.psample)
         if counter == 0:
+            print('rscale: ', self.rscale)
             print('cen, pix_sep: ', e_center, self.pix_sep)
             print('eres: ', self.e_res)
             print('mode_period: ', self.mode_period)
@@ -217,8 +222,8 @@ class Signal():
             print('num modes: ', num_modes)
 
         diff_pattern = cp.zeros(self.det_shape)
-        indices = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=int(self.psample.sum()), p=self.psample/self.psample.sum())
-        r_k = cp.outer(indices,self.kvector)
+        indices = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=1000, p=self.psample/self.psample.sum())
+        r_k = cp.outer(indices*self.rscale,self.kvector)
         if self.incoherent:
             phases_rand = cp.array(cp.random.random(size=(2, num_modes, indices.shape[0])))
         else:
@@ -303,7 +308,7 @@ if __name__ == '__main__':
     det_dist = config.getfloat(section, 'det_dist', fallback=1.)
     print(det_dist)
     pixel_size = config.getint(section, 'pixel_size', fallback=100)
-    fov = config.getint(section, 'fov', fallback=20)
+    particle_size = config.getint(section, 'particle_size', fallback=350)
     det_shape = fshape
     #num_photons = np.ceil(args.photon_density * det_shape[0] * det_shape[1]).astype(int)
 
@@ -314,7 +319,7 @@ if __name__ == '__main__':
     print('Simulate {} line for {}'.format(emission_lines, elements))
  
     sig = Signal(elements, emission_lines, det_shape=det_shape, binning=binning, num_shots=num_shots, num_photons=num_photons, 
-                 noise=noise, incoherent=incoherent, efilter=efilter, alpha_modes=alpha, det_dist=det_dist, pixel_size=pixel_size, fov=fov)
+                 noise=noise, incoherent=incoherent, efilter=efilter, alpha_modes=alpha, det_dist=det_dist, pixel_size=pixel_size, particle_size=particle_size)
     sig.create_sample()
     sig.sim_glob()
 
