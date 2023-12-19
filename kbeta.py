@@ -31,7 +31,7 @@ JOBS_PER_DEV = 1
 
 class Signal():  
     def __init__(self, elements, lines, det_shape=(1024,1024), binning=8, num_shots=1000, num_photons=50,
-                 emission_line='kb1', noise=60, efilter=False, det_dist=4, pixel_size=100, particle_size=350):
+                 emission_line='kb1', noise=60, efilter=False, det_dist=4, si_dist=30e-2, pixel_size=100, particle_size=350):
 
         self.elements = elements
         self.lines = lines
@@ -42,6 +42,8 @@ class Signal():
         self.binning = binning
         self.offset = self.det_shape[0]//2
         self.det_distance = det_dist 
+        self.si_dist = si_dist
+        self.det_dist_E = self.det_distance - self.si_dist
         self.pixel_size = pixel_size*1e-6
         self.efilter = efilter
         self.num_photons = num_photons
@@ -113,27 +115,42 @@ class Signal():
         phi2 = float(self.specs[1]['phi'])
         E1 = float(self.specs[0]['E'])
         E2 = float(self.specs[1]['E'])
-        darwin = np.max((float(self.specs[0]['darwin']), float(self.specs[1]['darwin'])))
-  
+        darwin_b1 = float(self.specs[0]['darwin'])
+        darwin_b2 = float(self.specs[1]['darwin'])
+    
         E3 = float(self.specs[-1]['E']) #elastic 
         phi3 = float(self.specs[-1]['phi'])
         e_sep = E3 - E1
         e_center = np.round((E1+E3)/2).astype(int)
+        phi_cen = (phi1+phi3)/2
 
         N = self.det_distance / self.pixel_size
         self.rpix_size = self.particle_size / (self.size_em2*2)
         self.rscale = (self.rpix_size/self.lam) / N
 
-        self.pix_sep = self.det_distance * np.tan(np.abs(phi1-phi3)*cp.pi/180) / self.pixel_size
-        self.beta_shift = self.det_distance * np.tan(np.abs(phi1-phi2)*cp.pi/180) / self.pixel_size
+        print('det dist E: ', self.det_dist_E)
+        x1 = self.det_dist_E * np.tan(np.abs(phi1-phi_cen)*cp.pi/180)
+        x2 = self.det_dist_E * np.tan(np.abs(phi2-phi_cen)*cp.pi/180)
+        x3 = self.det_dist_E * np.tan(np.abs(phi3-phi_cen)*cp.pi/180)
+        self.pix_sep = np.abs(x1+x3) / self.pixel_size
+        self.beta_shift =  np.abs(x1-x2) / self.pixel_size
+ 
         self.e_res = (e_sep)/np.round(self.pix_sep)
-        self.mode_period = (self.pulse_dur/np.ceil(self.pulse_dur/self.tau)) * self.width/self.e_res  #pulse duration over energy resolution compared to fabian times tc in attoseconds
-        self.deltaE = self.det_distance * (cp.tan((phi1+darwin/3600)*np.pi/180) - cp.tan(phi1*np.pi/180)) / self.pixel_size #uncertainty from darwin plateau in units of pixel
-        
+        #self.deltaE = self.det_distance * (cp.tan((phi1+darwin/3600)*np.pi/180) - cp.tan(phi1*np.pi/180)) / self.pixel_size #uncertainty from darwin plateau in units of pixel
+
+        self.dE_b1 = np.ceil(2*self.det_dist_E * (np.tan((phi1+darwin_b1/3600-phi_cen)*np.pi/180) - np.tan((phi1-phi_cen)*np.pi/180)) / self.pixel_size).astype(int) #uncertainty from darwin plateau in units of pixel
+        self.dE_b2 = np.ceil(2*self.det_dist_E * (np.tan((phi2+darwin_b2/3600-phi_cen)*np.pi/180) - np.tan((phi2-phi_cen)*np.pi/180)) / self.pixel_size).astype(int) #uncertainty from darwin plateau in units of pixel
+        self.deltaE = np.max((self.dE_b1, self.dE_b2))
+
+        self.mode_period = self.tau * self.width / (self.deltaE * self.e_res)
+    
         if counter == 0:
+            print('phi: ', phi1, phi2, phi3, phi_cen)
             print('rscale: ', self.rscale)
+            print('pix_sep: ', self.pix_sep)
             print('bshift: ', self.beta_shift)
-            print('eres: ', self.e_res)
+            print('Energy resolution from pixels: ', self.e_res)
+            print('Uncertainty from darwin: ', self.dE_b1, self.dE_b2)
             print('ecenter: ', e_center)
             print('mode_period: ', self.mode_period)
             print('dE [eV], [pix]: ', self.deltaE*self.e_res, self.deltaE)
@@ -169,6 +186,19 @@ class Signal():
         sig = sig/2.355
         return a * cp.exp(-(x-mu)**2/(2*sig**2))
  
+    def darwin_kernel(self, width):
+        x0 = int(self.det_shape[1]//2)
+        y = cp.zeros(self.det_shape[1])
+        y[int(x0-width//2):int(x0+width//2+1)] = 1
+        xupper = cp.arange(1, self.det_shape[1]-(x0+width//2-1))
+        xlower = cp.arange(1, x0-width//2+1) * -1
+        yupper = (xupper - cp.sqrt(xupper**2-1))**2
+        ylower = (xlower + cp.sqrt(xlower**2-1))**2
+        y[int(x0+width//2):] = yupper
+        y[:int(x0-width//2)] = ylower[::-1]
+        return y
+
+
     def sim_glob(self):
         self.file_per_run_counter = 0
         num_jobs = NUM_DEV * JOBS_PER_DEV
@@ -234,14 +264,14 @@ class Signal():
         r_k_el = cp.outer(indices*self.rscale,self.kvector)
         r_k1 = cp.outer(ind_inner*self.rscale,self.kvector)
         r_k2 = cp.outer(ind_outer*self.rscale,self.kvector)
-        phases_fl_inner = cp.array(cp.random.random(size=(num_modes, ind_inner.shape[0]))).astype('f4')
+        phases_fl_inner = 2*cp.pi*cp.array(cp.random.random(size=(num_modes, ind_inner.shape[0]))).astype('f4')
 
-        phases_fl_outer = cp.array(cp.random.random(size=(num_modes, ind_outer.shape[0]))).astype('f4')
+        phases_fl_outer = 2*cp.pi*cp.array(cp.random.random(size=(num_modes, ind_outer.shape[0]))).astype('f4')
         phases_el = cp.zeros((1, num_modes, indices.shape[0])).astype('f4')
 
-        psi_fl_inner = cp.exp(1j*2*cp.pi*(r_k1[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_fl_inner)).sum(-1)
-        psi_fl_outer = cp.exp(1j*2*cp.pi*(r_k2[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_fl_outer)).sum(-1)
-        psi_el = cp.exp(1j*2*cp.pi*(r_k_el[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_el)).sum(-1)
+        psi_fl_inner = cp.exp(1j*(r_k1[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_fl_inner)).sum(-1)
+        psi_fl_outer = cp.exp(1j*(r_k2[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_fl_outer)).sum(-1)
+        psi_el = cp.exp(1j*(r_k_el[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_el)).sum(-1)
 
         psi_fl_inner *= (pop / pop_max)
         psi_fl_outer *= (pop / pop_max)
@@ -255,15 +285,18 @@ class Signal():
         int2d_fl_outer = int_fl_outer.sum(-1) * kbeta2[cp.newaxis,:]
         int2d_el = int_el.sum(-1) * elastic[cp.newaxis,:]
 
+        if self.efilter:
+            #int_filter = cundimage.gaussian_filter(int_tot, sigma=(0,self.deltaE), mode='reflect')
+            dkernel1 = self.darwin_kernel(cp.max(cp.array([self.dE_b1,2])))
+            dkernel2 = self.darwin_kernel(cp.max(cp.array([self.dE_b2,2])))
+            int2d_fl_inner = cusignal.fftconvolve(int2d_fl_inner, dkernel1[cp.newaxis,:][:,::-1], mode='same', axes=1)
+            int2d_fl_outer = cusignal.fftconvolve(int2d_fl_outer, dkernel2[cp.newaxis,:][:,::-1], mode='same', axes=1)
+        
         mode_fl = int2d_fl_inner + int2d_fl_outer
         mode_fl *= self.num_photons / mode_fl.sum()
-        #int_tot = mode_fl + int2d_el * 0.1 * self.num_photons / int2d_el.sum()
-        int_tot = mode_fl + int2d_el * 10 * self.num_photons / int2d_el.sum()
-        if self.efilter:
-            int_filter = cundimage.gaussian_filter(int_tot, sigma=(0, self.deltaE), mode='reflect')
-        else:
-            int_filter = int_tot
-        int_p = cp.random.poisson(cp.abs(int_filter),size=self.det_shape)
+        int_tot = mode_fl + int2d_el * 0.1 * self.num_photons / int2d_el.sum()
+        #int_tot = mode_fl + int2d_el * 10 * self.num_photons / int2d_el.sum()
+        int_p = cp.random.poisson(cp.abs(int_tot),size=self.det_shape)
         int_p *= self.adu_phot
         diff_pattern += int_p
         #bg = cp.random.randint(0, diff_pattern.size, self.background)
@@ -276,7 +309,7 @@ class Signal():
 
     def calc_beam_profile(self, counter):
         x = cp.arange(-1e4, 1e4, self.mode_period) #(FWHM/num_modes without polarization)
-        y = self.num_photons * self.gaussian(x, 1, 0, 6.2*1000) #2596 is 6.2/2.35
+        y = self.num_photons * self.gaussian(x, 1, 0, self.pulse_dur)
         shot_noise = cp.random.uniform(-0.8, 0.8, len(y))
         y_noise = cp.round(y + shot_noise * y).astype(int)
         mask = cp.zeros_like(y_noise)
@@ -295,7 +328,7 @@ class Signal():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Simulate 1 spectral-IDI')
     parser.add_argument('-c', '--config_fname', help='Config file',
-                        default='sim_config.ini')
+                        default='sim_beta.ini')
     parser.add_argument('-s', '--config_section', help='Section in config file (default: sim)', default='sim')
     args = parser.parse_args()
 
@@ -310,6 +343,7 @@ if __name__ == '__main__':
     noise = config.getint(section, 'noise', fallback=60)
     efilter = config.getboolean(section, 'filter', fallback=True)
     det_dist = float(config.get(section, 'det_dist', fallback=1))
+    si_dist = float(config.get(section, 'si_dist', fallback=30e-2))
     pixel_size = config.getint(section, 'pixel_size', fallback=100)
     particle_size = config.getfloat(section, 'particle_size', fallback=350)
     line = config.get(section, 'emission_line', fallback='kb1')
@@ -322,7 +356,7 @@ if __name__ == '__main__':
     print('Detector distance: ', det_dist)
     print('Simulate {} line for {}'.format(emission_lines, elements))
  
-    sig = Signal(elements, emission_lines, det_shape=det_shape, binning=binning, num_shots=num_shots, num_photons=num_photons, emission_line=line, noise=noise, efilter=efilter, det_dist=det_dist, pixel_size=pixel_size, particle_size=particle_size)
+    sig = Signal(elements, emission_lines, det_shape=det_shape, binning=binning, num_shots=num_shots, num_photons=num_photons, emission_line=line, noise=noise, efilter=efilter, det_dist=det_dist, si_dist=si_dist, pixel_size=pixel_size, particle_size=particle_size)
     sig.create_sample()
     sig.sim_glob()
 
