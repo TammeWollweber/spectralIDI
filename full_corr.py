@@ -20,7 +20,7 @@ NUM_DEV = 3
 JOBS_PER_DEV = 4
 
 class ProcessCorr():
-    def __init__(self, flist, output_fname, mask_fname=None, fshape=(540, 640), num_bins=1):
+    def __init__(self, flist, output_fname, mask_fname=None, fshape=(540, 640), frames_per_file=1000, num_bins=1):
         self.fshape = fshape
 
         if mask_fname is None:
@@ -47,13 +47,13 @@ class ProcessCorr():
         self.mean_shot = None
         self.num_bins = num_bins
         self.bin_boundaries = np.empty(self.num_bins)
-        self.frames_per_file = 32
+        self.frames_per_file = frames_per_file
         self.np_dark = np.zeros(self.fshape)
 
     def _init_corr(self, min_val=None, max_val=None):
         self.cudark = cp.array(self.np_dark)
         self.cumask = cp.array(self.np_mask)
-        self.corr = cp.zeros((self.num_bins, self.fshape[0], self.fshape[1]))
+        self.corr = cp.zeros((self.num_bins, 2*self.fshape[0]-1, 2*self.fshape[1]-1))
         self.integ = cp.zeros((self.num_bins, self.fshape[0], self.fshape[1]))
         self.corrsq = cp.zeros_like(self.corr)
         self.bin_hist = cp.zeros(self.num_bins)
@@ -69,7 +69,7 @@ class ProcessCorr():
             self.flist = self.flist[self.start:self.end]
         else:
             self.flist = self.flist[self.start:]
-        self.nframes = self.start*1000
+        self.nframes = self.start*self.frames_per_file
 
     def proc_glob(self, min_val=None, max_val=None, **kwargs):
         self._init_flist(min_val=min_val, max_val=max_val)
@@ -84,11 +84,11 @@ class ProcessCorr():
         except RuntimeError:
             pass
 
-        corr_arr = mp.Array(ctypes.c_double, num_jobs*self.num_bins*int(np.product(np.array(self.fshape))))
+        corr_arr = mp.Array(ctypes.c_double, num_jobs*self.num_bins*int(np.product(2*np.array(self.fshape)-1)))
         integ_arr = mp.Array(ctypes.c_double, num_jobs*self.num_bins*int(np.product(self.fshape)))
-        corrsq_arr = mp.Array(ctypes.c_double, num_jobs*self.num_bins*int(np.product(np.array(self.fshape))))
+        corrsq_arr = mp.Array(ctypes.c_double, num_jobs*self.num_bins*int(np.product(2*np.array(self.fshape)-1)))
         bin_hist_arr = mp.Array(ctypes.c_double, num_jobs*self.num_bins)
-        isums_arr = mp.Array(ctypes.c_double, 1000*len(self.flist))
+        isums_arr = mp.Array(ctypes.c_double, self.frames_per_file*len(self.flist))
         jobs = [mp.Process(target=self._mp_worker, args=(d, self.flist,
                                                          corr_arr,
                                                          integ_arr, corrsq_arr, isums_arr, 
@@ -101,7 +101,7 @@ class ProcessCorr():
 
         self.isums = np.frombuffer(isums_arr.get_obj())
         nframes = self.isums.shape[0]
-        self.corr = np.frombuffer(corr_arr.get_obj()).reshape((num_jobs, self.num_bins) + tuple(np.array(self.fshape)))
+        self.corr = np.frombuffer(corr_arr.get_obj()).reshape((num_jobs, self.num_bins) + tuple(2*np.array(self.fshape)-1))
         self.corr = self.corr.sum(0) 
         self.integ = np.frombuffer(integ_arr.get_obj()).reshape((num_jobs, self.num_bins) + self.fshape)
         self.integ = self.integ.sum(0)
@@ -118,7 +118,7 @@ class ProcessCorr():
         #self._init_corr(min_val=self.min_val, max_val=self.max_val)
         self._init_corr()
         kwargs = {'adu_thresh': adu_thresh, 'norm': norm}
-        mycorr = np.frombuffer(corr_arr.get_obj()).reshape((num_jobs, self.num_bins) + tuple(np.array(self.fshape)))
+        mycorr = np.frombuffer(corr_arr.get_obj()).reshape((num_jobs, self.num_bins) + tuple(2*np.array(self.fshape)-1))
         myinteg = np.frombuffer(integ_arr.get_obj()).reshape((num_jobs,self.num_bins) + self.fshape)
         mycorrsq = np.frombuffer(corrsq_arr.get_obj()).reshape((num_jobs,) + mycorr.shape[1:])
     
@@ -135,9 +135,6 @@ class ProcessCorr():
         myinteg[rank] += self.integ.get()
         mycorrsq[rank] += self.corrsq.get()
         mybin_hist[rank] += self.bin_hist.get()
-            #if ((i+1) * num_jobs) % self.frames_per_file:
-            #    self.save_corr(idx=counter)
-            #    counter += 1
 
     def _proc_file(self, fname, fnum, isums, **kwargs):
         if self.np_dark is None:
@@ -155,7 +152,7 @@ class ProcessCorr():
 
             fr_corr, fr_integ = self._proc_frame(fr, **kwargs)
             isum_tmp = fr_integ.sum() #takes into account that different mask can be used now wrt to original isum data
-            n_tot = fnum*1000 + n
+            n_tot = fnum*self.frames_per_file + n
             bin_idx = None
             if self.num_bins == 1:
                 bin_idx = 0
@@ -163,7 +160,7 @@ class ProcessCorr():
                 bin_idx = cp.argmin(cp.abs(cp.array(self.bin_boundaries) - isum_tmp))
 
             isums[n_tot] = isum_tmp 
-            sfr_corr_tmp = cusignal.fftconvolve(sfr_tmp[bin_idx], fr_integ[::-1, ::-1], mode='same')
+            sfr_corr_tmp = cusignal.fftconvolve(sfr_tmp[bin_idx], fr_integ[::-1, ::-1], mode='full')
             sfr_tmp[bin_idx] = cp.copy(fr_integ)
 
 
@@ -182,22 +179,19 @@ class ProcessCorr():
         npix = self.fshape[0] * self.fshape[1]
         bsize = npix // 32 + 1
         self.k_thresh_frame((bsize,), (32,), (sfr, npix, adu_thresh, self.cumask))
-        if norm:
-            cp.divide(sfr, cundimage.maximum_filter(sfr, 3, mode='constant'), out=sfr)
-            sfr[cp.isnan(sfr) | cp.isinf(sfr)] = 0
-        return cusignal.fftconvolve(sfr, sfr[::-1,::-1], mode='same'), sfr
+        return cusignal.fftconvolve(sfr, sfr[::-1,::-1], mode='full'), sfr
 
     def norm_corr(self):
         if self.num_bins > 1:
             integ = self.integ*self.np_mask
-            integ_corr = signal.fftconvolve(integ, integ[:,::-1,::-1], mode='same', axes=(1,2)) 
+            integ_corr = signal.fftconvolve(integ, integ[:,::-1,::-1], mode='full', axes=(1,2)) 
             ncorr = (self.corr/ integ_corr).T * self.bin_hist
             ncorr[np.isnan(ncorr) | np.isinf(ncorr)] = 1
             weights = integ.mean((1,2))**2 * self.bin_hist
             wncorr = (ncorr * weights).T.sum(0) / weights.sum()
             ncorr = wncorr
         else:
-            ncorr = self.corr[0] / signal.fftconvolve(self.integ[0], self.integ[0][::-1,::-1], mode='same') 
+            ncorr = self.corr[0] / signal.fftconvolve(self.integ[0], self.integ[0][::-1,::-1], mode='full') 
         return ncorr
 
     def save_corr(self, idx=None):
@@ -267,7 +261,7 @@ def main():
             print('Writing output to', output_fname)
 
             flist = natsort.natsorted(glob.glob(data_glob))
-            pc = ProcessCorr(flist, output_fname, mask_fname, fshape, num_bins)
+            pc = ProcessCorr(flist, output_fname, mask_fname, fshape, frames_per_file=file_chunk, num_bins=num_bins)
             pc.proc_glob(min_val, max_val, norm=norm, adu_thresh=threshold)
             pc.save_corr()
 

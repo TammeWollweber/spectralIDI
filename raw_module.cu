@@ -46,6 +46,38 @@ const double sampling, float* integ, double* output) {
     atomicAdd(&output[res_x * size + res_y], 1.);
 }
 
+__global__ void atomic_sim(const float* pos_x, const float* pos_y,
+const long long npoints, const long long a, const long long b, 
+const double sampling, float* sfr, float* integ, double* output) {
+    long long m = blockDim.x * blockIdx.x + threadIdx.x;
+    long long n = blockDim.y * blockIdx.y + threadIdx.y;
+    if (m >= npoints || n >= npoints)
+    return ;
+
+    int pos_xm = __double2int_rd(pos_x[m]);
+    int pos_ym = __double2int_rd(pos_y[m]);
+    int pos_xn = __double2int_rd(pos_x[n]);
+    int pos_yn = __double2int_rd(pos_y[n]);
+
+    float fm = sfr[pos_xm * b + pos_ym];
+    float fn = sfr[pos_xn * b + pos_yn];
+
+    if (n == 0) {
+    	atomicAdd(&integ[pos_xm * b + pos_ym], 1.);
+    	} 
+
+    long long size = 2*b-1 ;
+    int offset_x = __double2int_rd((a-1)*sampling);
+    int offset_y = __double2int_rd((b-1)*sampling);
+    float diff_x = (pos_xm - pos_xn) * sampling;
+    float diff_y = (pos_ym - pos_yn) * sampling;
+    int res_x = diff_x + offset_x;
+    int res_y = diff_y + offset_y;
+    if ((res_x < 0 || res_x >= 2*a) || (res_y < 0 || res_y >= 2*b))
+    return;
+    atomicAdd(&output[res_x * size + res_y], fm*fn);
+}
+
 __global__ void cross_2d(const float* pos1_x, const float* pos1_y, const
         float* pos2_x, const float* pos2_y, const long long npoints, const long
         long npoints2, const long long a, const long long b, const double sampling, double* output) {
@@ -72,7 +104,7 @@ __global__ void cross_2d(const float* pos1_x, const float* pos1_y, const
     atomicAdd(&output[(res_x) * size + res_y], 1.);
 }
 
-__global__ void cinteg_3d(const float* pos_x, const float* pos_y, const float* pos_z, const long long npoints, 				const long long a, const long long b, const long long c, const double sampling, float* integ, double* output) {
+__global__ void cinteg_3d(const float* pos_x, const float* pos_y, const float* pos_z, const long long npoints, const long long a, const long long b, const long long c, const double sampling, float* integ, double* output) {
     long long m = blockDim.x * blockIdx.x + threadIdx.x;
     long long n = blockDim.y * blockIdx.y + threadIdx.y;
     if (m >= npoints || n >= npoints)

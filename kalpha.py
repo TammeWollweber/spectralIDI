@@ -50,8 +50,8 @@ class Signal():
         self.alpha_modes = alpha_modes
         self.num_photons = num_photons
 
-        self.size_em = 21
-        self.sample_shape = (64, 64)
+        self.size_em = 14
+        self.sample_shape = (30,30)
         self.sample = None
         self.hits = []
         self.hit_size = None
@@ -61,13 +61,16 @@ class Signal():
         self.r_k = None
         self.beat_period = 413 #attoseconds
         self.mode_period = None
-        self.adu_phot = 160
+        self.adu_phot = 1
         self.fft = None
         self.corr_list = []
         self.noise_level = noise
         self.background = np.round(10*self.num_photons).astype(int) #percentage of num_photons
         
-        self.shots_per_file = 1000
+        if self.det_shape[0] <= 1024:
+            self.shots_per_file = 1000
+        else:
+            self.shots_per_file = 250
         self.file_per_run_counter = 0
         self.data = []
         self.run_num = 0
@@ -129,7 +132,7 @@ class Signal():
 
         N = self.det_distance / self.pixel_size
         self.rpix_size = self.particle_size / (self.size_em*2)
-        self.rscale = (self.rpix_size/self.lam) / N
+        self.rscale = (self.rpix_size/self.lam) / N 
 
         x1 = self.det_dist_E * np.tan(np.abs(phi1-phi_cen)*cp.pi/180)
         x2 = self.det_dist_E * np.tan(np.abs(phi2-phi_cen)*cp.pi/180)
@@ -248,16 +251,14 @@ class Signal():
             print('num modes: ', num_modes)
 
         diff_pattern = cp.zeros(self.det_shape)
-        indices = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=1000, p=self.psample/self.psample.sum())
+        indices = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=self.num_photons, p=self.psample/self.psample.sum())
         r_k = cp.outer(indices*self.rscale,self.kvector)
         if self.incoherent:
             phases_rand = 2*cp.pi*cp.array(cp.random.random(size=(2, num_modes, indices.shape[0])))
         else:
             phases_rand = cp.zeros((2, num_modes, indices.shape[0]))
 
-        #psi = cp.exp(1j*2*cp.pi*(r_k[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_rand)).sum(-1)
         psi = cp.exp(1j*(r_k[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_rand)).sum(-1)
-
         psi *= (pop / pop_max)/2
 
         if self.alpha_modes == 1:

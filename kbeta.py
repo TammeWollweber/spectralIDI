@@ -49,22 +49,25 @@ class Signal():
         self.num_photons = num_photons
         self.emission_line = emission_line
 
-        self.size_em1 = 21
-        self.size_em2 = 30
-        self.sample_shape = (64,64)
+        self.size_em1 = 5
+        self.size_em2 = 7
+        self.sample_shape = (14,14)
         self.sample = None
         self.hits = []
         self.hit_size = None
         self.num_shots = num_shots 
         self.kvector = None
         self.r_k = None
-        self.adu_phot = 160
+        self.adu_phot = 1
         self.fft = None
         self.corr_list = []
         self.noise_level = noise
         self.background = np.round(10*self.num_photons).astype(int) #percentage of num_photons
-        
-        self.shots_per_file = 1000
+        if self.det_shape[0] <= 1024:
+            self.shots_per_file = 1000
+        else:
+            self.shots_per_file = 250
+ 
         self.file_per_run_counter = 0
         self.data = []
         self.run_num = 0
@@ -257,9 +260,9 @@ class Signal():
         outer_weight = self.p_outer.sum()
 
         diff_pattern = cp.zeros(self.det_shape)
-        indices = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=int(1000), p=self.p_tot/self.p_tot.sum()).astype('u2')
-        ind_inner = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=np.round(1000*(inner_weight/(inner_weight+outer_weight))).astype(int), p=self.p_inner/self.p_inner.sum()).astype('u2')
-        ind_outer = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=np.round(1000*(outer_weight/(inner_weight+outer_weight))).astype(int), p=self.p_outer/self.p_outer.sum()).astype('u2')
+        indices = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=self.num_photons, p=self.p_tot/self.p_tot.sum()).astype('u2')
+        ind_inner = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=np.round(self.num_photons*(inner_weight/(inner_weight+outer_weight))).astype(int), p=self.p_inner/self.p_inner.sum()).astype('u2')
+        ind_outer = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=np.round(self.num_photons*(outer_weight/(inner_weight+outer_weight))).astype(int), p=self.p_outer/self.p_outer.sum()).astype('u2')
 
         r_k_el = cp.outer(indices*self.rscale,self.kvector)
         r_k1 = cp.outer(ind_inner*self.rscale,self.kvector)
