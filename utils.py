@@ -41,22 +41,24 @@ def rad_2d(data, center):
 def rotate(corr, angle=12):
     return ndi.rotate(corr, angle, order=1, reshape=False)
 
-def get_zscore(integ, ucorr, ucorrsq, isums, cmask=None):
+def get_zscore(integ, corr, ucorr, ucorrsq, isums, cmask=None):
     noise = np.sqrt(ucorrsq-ucorr**2)
     cinteg = signal.fftconvolve(integ, integ[::-1,::-1], mode='same')
-    if cmask is None:
-        cmask = cinteg > 20
+    #if cmask is None:
+    #    cmask = cinteg > 20
+    cmask = np.ones_like(corr).astype(int)
     zscore = (corr-np.nanmedian(corr[cmask])) / (noise/cinteg/isums.shape[0]**0.5)
     zscore[~cmask] = 0
     zscore[np.isnan(zscore) | np.isinf(zscore)] = 0
     return zscore
 
 
-def get_zscore_1d(integ, ucorr, ucorrsq, isums, cmask=None):
+def get_zscore_1d(integ, corr, ucorr, ucorrsq, isums, cmask=None):
     noise = np.sqrt(ucorrsq-ucorr**2)
-    cinteg = signal.fftconvolve(integ, integ[::-1,:], mode='same', axes=0)
-    if cmask is None:
-        cmask = cinteg>20
+    cinteg = signal.fftconvolve(integ, integ[::-1,:], mode='full', axes=0)
+    #if cmask is None:
+    #    cmask = cinteg>20
+    cmask = np.ones_like(corr).astype(int)
     zscore = (corr-np.nanmedian(corr[cmask])) / (noise/cinteg/isums.shape[0]**0.5)
     zscore[~cmask] = 0
     zscore[np.isnan(zscore) | np.isinf(zscore)] = 0
@@ -74,12 +76,14 @@ def load_file(exp='231127', oned=True, r=0):
         numr = f['corr_numr'][:]
         ucorrsq = f['corrsq_numr'][:]
         isums = f['frame_sums'][:]
-    print('mean: ', np.nanmean(corr))
+    print('mean: ', np.nanmedian(corr))
+    remove_nans(corr)
     if oned:
-        zscore = get_zscore_1d(integ, numr, ucorrsq,isums)
+        zscore = get_zscore_1d(integ, corr, numr, ucorrsq, isums)
+        return integ, corr-1, zscore, numr, isums
     else:
-        zscore = get_zscore(integ, numr, ucorrsq, isums)
-    return integ, corr-1, zscore, numr, isums
+        zscore = get_zscore(integ, corr, numr, ucorrsq, isums)
+        return integ, corr-1, zscore, numr, isums
 
 
 def calc_diff(corr, theta=55, p_width=1):

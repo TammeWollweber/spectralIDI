@@ -119,6 +119,24 @@ class Signal():
         print('coherence time, width kalpha2: ', self.tau, self.width)
         print(self.specs)
 
+    def _calc_energy_resolution(self, e_cen, counter):
+        lam_cen = const.h * const.c / (e_cen * const.e)
+        tcen = 71.62
+        lat = lam_cen / (2*np.sin(tcen/180*np.pi)) #lattice constant
+        phi = np.arctan(1024*self.pixel_size/self.det_distance)*180/np.pi
+        tmax = tcen + phi
+        tmin = tcen - phi
+        lam_max = 2*lat*np.sin(tmax*np.pi/180)
+        lam_min = 2*lat*np.sin(tmin*np.pi/180)
+        Emax = const.h * const.c / lam_max / const.e
+        Emin = const.h * const.c / lam_min / const.e
+        self.e_res = np.abs(Emax-Emin) / 1024
+        if counter == 0:
+            print('Energy range: ', Emax, Emin, np.abs(Emax-Emin))
+            print('Energy resolution: ', self.e_res)
+
+
+
     def _init_sim(self, counter):
         phi1 = float(self.specs[0]['phi'])
         phi2 = float(self.specs[1]['phi'])
@@ -127,35 +145,35 @@ class Signal():
         darwin_a1 = float(self.specs[0]['darwin'])
         darwin_a2 = float(self.specs[1]['darwin'])
         e_sep = E1 - E2
-        phi_cen = (phi1+phi2)/2
+        tcen = (phi1+phi2)/2
+
         e_center = np.round((E1 + E2)/2).astype(int)
+        self._calc_energy_resolution(e_center, counter)
 
         N = self.det_distance / self.pixel_size
         self.rpix_size = self.particle_size / (self.size_em*2)
         self.rscale = (self.rpix_size/self.lam) / N 
 
-        x1 = self.det_dist_E * np.tan(np.abs(phi1-phi_cen)*cp.pi/180)
-        x2 = self.det_dist_E * np.tan(np.abs(phi2-phi_cen)*cp.pi/180)
+        x1 = self.det_dist_E * np.tan(np.abs(phi1-tcen)*cp.pi/180)
+        x2 = self.det_dist_E * np.tan(np.abs(phi2-tcen)*cp.pi/180)
         self.pix_sep = np.abs(x1+x2) / self.pixel_size
 
         self.xka2 = self.det_shape[1]//2 - self.pix_sep//2
         self.xka1 = self.det_shape[1]//2 + self.pix_sep//2
-        self.e_res = (e_sep)/np.round(self.pix_sep)
         
 
-        self.dE_a1 = np.ceil(2*self.det_dist_E * (np.tan((phi1+darwin_a1/3600-phi_cen)*np.pi/180) - np.tan((phi1-phi_cen)*np.pi/180)) / self.pixel_size).astype(int) #uncertainty from darwin plateau in units of pixel
-        self.dE_a2 = np.ceil(2*self.det_dist_E * (np.tan((phi2+darwin_a2/3600-phi_cen)*np.pi/180) - np.tan((phi2-phi_cen)*np.pi/180)) / self.pixel_size).astype(int) #uncertainty from darwin plateau in units of pixel
+        self.dE_a1 = np.ceil(2*self.det_dist_E * (np.tan((phi1+darwin_a1/3600-tcen)*np.pi/180) - np.tan((phi1-tcen)*np.pi/180)) / self.pixel_size).astype(int) #uncertainty from darwin plateau in units of pixel
+        self.dE_a2 = np.ceil(2*self.det_dist_E * (np.tan((phi2+darwin_a2/3600-tcen)*np.pi/180) - np.tan((phi2-tcen)*np.pi/180)) / self.pixel_size).astype(int) #uncertainty from darwin plateau in units of pixel
         self.deltaE = np.max((self.dE_a1, self.dE_a2))
 
         self.mode_period = self.tau * self.width / (self.deltaE * self.e_res)
 
-        e_range = cp.round(self.det_shape[1] * self.e_res).astype(int)
         self.kvector = cp.arange(self.det_shape[0]) - self.det_shape[0]//2
 
         self.sample = cp.array(self.sample)
         self.psample = cp.array(self.psample)
         if counter == 0:
-            print('phi: ', phi1, phi2, phi_cen)
+            print('phi: ', phi1, phi2, tcen)
             print('rscale: ', self.rscale)
             print('cen, pix_sep: ', e_center, self.pix_sep)
             print('Energy resolution from pixels: ', self.e_res)

@@ -225,7 +225,7 @@ class ProcessCorr():
 def main():
     parser = argparse.ArgumentParser(description='Correlate dense frames')
     parser.add_argument('-c', '--config_fname', help='Config file',
-                        default='config.ini')
+                        default='conf_alpha.ini')
     parser.add_argument('-s', '--config_section', help='Section in config file (default: corr)', default='corr')
     parser.add_argument('-r', '--run_num', type=int, help='run_num, if None take from config file', default=-1)
     args = parser.parse_args()

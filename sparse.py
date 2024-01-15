@@ -216,7 +216,6 @@ class ProcessCorr():
                           self.fshape[0], self.fshape[1],  1., integ, integ_tmp, cinteg))
         
    
-        #ncorr = self.corr[0] / signal.fftconvolve(self.integ[0], self.integ[0,::-1,::-1]) 
         ncorr = self.corr[0] / cinteg.get() 
         return ncorr
 

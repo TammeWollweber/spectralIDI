@@ -20,7 +20,7 @@ NUM_DEV = 3
 JOBS_PER_DEV = 4
 
 class ProcessCorr():
-    def __init__(self, flist, output_fname, mask_fname=None, fshape=(540, 640), start=0, end=None, num_bins=1):
+    def __init__(self, flist, output_fname, mask_fname=None, fshape=(540, 640), frames_per_file=1000, start=0, end=None, num_bins=1):
         self.fshape = fshape
 
         if mask_fname is None:
@@ -47,7 +47,7 @@ class ProcessCorr():
         self.mean_shot = None
         self.num_bins = num_bins
         self.bin_boundaries = np.empty(self.num_bins)
-        self.frames_per_file = 32
+        self.frames_per_file = frames_per_file
         self.np_dark = np.zeros(self.fshape)
 
     def _init_corr(self, min_val=None, max_val=None):
@@ -69,7 +69,7 @@ class ProcessCorr():
             self.flist = self.flist[self.start:self.end]
         else:
             self.flist = self.flist[self.start:]
-        self.nframes = self.start*1000
+        self.nframes = self.start*1
 
     def proc_glob(self, min_val=None, max_val=None, **kwargs):
         self._init_flist(min_val=min_val, max_val=max_val)
@@ -88,7 +88,7 @@ class ProcessCorr():
         integ_arr = mp.Array(ctypes.c_double, num_jobs*self.num_bins*int(np.product(self.fshape)))
         corrsq_arr = mp.Array(ctypes.c_double, num_jobs*self.num_bins*self.fshape[0]*self.fshape[1])
         bin_hist_arr = mp.Array(ctypes.c_double, num_jobs*self.num_bins)
-        isums_arr = mp.Array(ctypes.c_double, 1000*len(self.flist))
+        isums_arr = mp.Array(ctypes.c_double, self.frames_per_file*len(self.flist))
         jobs = [mp.Process(target=self._mp_worker, args=(d, self.flist,
                                                          corr_arr,
                                                          integ_arr, corrsq_arr, isums_arr, 
@@ -155,7 +155,7 @@ class ProcessCorr():
 
             fr_corr, fr_integ = self._proc_frame(fr, **kwargs)
             isum_tmp = fr_integ.sum() #takes into account that different mask can be used now wrt to original isum data
-            n_tot = fnum*1000 + n
+            n_tot = fnum*self.frames_per_file + n
             bin_idx = None
             if self.num_bins == 1:
                 bin_idx = 0
@@ -230,7 +230,7 @@ class ProcessCorr():
 def main():
     parser = argparse.ArgumentParser(description='Correlate dense frames')
     parser.add_argument('-c', '--config_fname', help='Config file',
-                        default='config.ini')
+                        default='conf_beta.ini')
     parser.add_argument('-s', '--config_section', help='Section in config file (default: corr)', default='corr')
     parser.add_argument('-r', '--run_num', type=int, help='run_num, if None take from config file', default=-1)
     args = parser.parse_args()
@@ -248,6 +248,7 @@ def main():
         runs = [args.run_num]
     starts = [int(s) for s in config.get(section, 'start_block').split()]
     file_chunk = config.getint(section, 'file_chunk', fallback=1000)
+    print('file chunk: ', file_chunk)
     end_orig = config.getint(section, 'stop_block', fallback=None)
     norm = config.getboolean(section, 'do_norm', fallback=False)
     threshold = config.getfloat(section, 'adu_threshold', fallback=300)
@@ -272,7 +273,7 @@ def main():
             if end is None:
                 end = -1
             flist = natsort.natsorted(glob.glob(data_glob))
-            pc = ProcessCorr(flist, output_fname, mask_fname, fshape, s, end, num_bins)
+            pc = ProcessCorr(flist, output_fname, mask_fname, fshape, file_chunk, s, end, num_bins)
             pc.proc_glob(min_val, max_val, norm=norm, adu_thresh=threshold)
             pc.save_corr()
 

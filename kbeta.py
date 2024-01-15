@@ -26,7 +26,7 @@ from cupyx.scipy import signal as cusignal
 from cupyx.scipy import ndimage as cundimage
 plt.ion()
 
-NUM_DEV = 1 
+NUM_DEV = 4
 JOBS_PER_DEV = 1
 
 class Signal():  
@@ -49,9 +49,9 @@ class Signal():
         self.num_photons = num_photons
         self.emission_line = emission_line
 
-        self.size_em1 = 5
-        self.size_em2 = 7
-        self.sample_shape = (14,14)
+        self.size_em1 = 10
+        self.size_em2 = 14
+        self.sample_shape = (30,30)
         self.sample = None
         self.hits = []
         self.hit_size = None
@@ -112,6 +112,23 @@ class Signal():
         self.width = float(config[e]['kalpha2']['w'])
         print('coherence time, width kalpha2: ', self.tau, self.width)
 
+    def _calc_energy_resolution(self, e_cen, counter):
+        lam_cen = const.h * const.c / (e_cen * const.e)
+        tcen = 58.84 
+        lat = lam_cen / (2*np.sin(tcen/180*np.pi))
+        phi = np.arctan(1024*self.pixel_size/self.det_distance)*180/np.pi
+        tmax = tcen + phi
+        tmin = tcen - phi
+        lam_max = 2*lat*np.sin(tmax*np.pi/180)
+        lam_min = 2*lat*np.sin(tmin*np.pi/180)
+        Emax = const.h * const.c / lam_max / const.e
+        Emin = const.h * const.c / lam_min / const.e
+        self.e_res = np.abs(Emax-Emin) / 1024
+        if counter == 0:
+            print('Energy range: ', Emax, Emin, np.abs(Emax-Emin))
+            print('Energy resolution: ', self.e_res)
+
+
 
     def _init_sim(self, counter):
         phi1 = float(self.specs[0]['phi'])
@@ -125,6 +142,8 @@ class Signal():
         phi3 = float(self.specs[-1]['phi'])
         e_sep = E3 - E1
         e_center = np.round((E1+E3)/2).astype(int)
+        self._calc_energy_resolution(e_center, counter)
+
         phi_cen = (phi1+phi3)/2
 
         N = self.det_distance / self.pixel_size
@@ -138,9 +157,6 @@ class Signal():
         self.pix_sep = np.abs(x1+x3) / self.pixel_size
         self.beta_shift =  np.abs(x1-x2) / self.pixel_size
  
-        self.e_res = (e_sep)/np.round(self.pix_sep)
-        #self.deltaE = self.det_distance * (cp.tan((phi1+darwin/3600)*np.pi/180) - cp.tan(phi1*np.pi/180)) / self.pixel_size #uncertainty from darwin plateau in units of pixel
-
         self.dE_b1 = np.ceil(2*self.det_dist_E * (np.tan((phi1+darwin_b1/3600-phi_cen)*np.pi/180) - np.tan((phi1-phi_cen)*np.pi/180)) / self.pixel_size).astype(int) #uncertainty from darwin plateau in units of pixel
         self.dE_b2 = np.ceil(2*self.det_dist_E * (np.tan((phi2+darwin_b2/3600-phi_cen)*np.pi/180) - np.tan((phi2-phi_cen)*np.pi/180)) / self.pixel_size).astype(int) #uncertainty from darwin plateau in units of pixel
         self.deltaE = np.max((self.dE_b1, self.dE_b2))
@@ -149,7 +165,7 @@ class Signal():
     
         if counter == 0:
             print('phi: ', phi1, phi2, phi3, phi_cen)
-            print('rscale: ', self.rscale)
+            print('rscale: ', self.rscale, self.rpix_size)
             print('pix_sep: ', self.pix_sep)
             print('bshift: ', self.beta_shift)
             print('Energy resolution from pixels: ', self.e_res)
@@ -253,16 +269,16 @@ class Signal():
         pop = self.calc_beam_profile(counter)
         pop_max = cp.round(pop.max()).astype(int)
         num_modes = len(pop)
-        if counter == 0:
-            print('num modes: ', num_modes)
 
         inner_weight = self.p_inner.sum()
         outer_weight = self.p_outer.sum()
-
         diff_pattern = cp.zeros(self.det_shape)
         indices = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=self.num_photons, p=self.p_tot/self.p_tot.sum()).astype('u2')
         ind_inner = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=np.round(self.num_photons*(inner_weight/(inner_weight+outer_weight))).astype(int), p=self.p_inner/self.p_inner.sum()).astype('u2')
         ind_outer = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=np.round(self.num_photons*(outer_weight/(inner_weight+outer_weight))).astype(int), p=self.p_outer/self.p_outer.sum()).astype('u2')
+
+        if counter == 0:
+            print('num modes: ', num_modes)
 
         r_k_el = cp.outer(indices*self.rscale,self.kvector)
         r_k1 = cp.outer(ind_inner*self.rscale,self.kvector)
@@ -302,6 +318,8 @@ class Signal():
         int_p = cp.random.poisson(cp.abs(int_tot),size=self.det_shape)
         int_p *= self.adu_phot
         diff_pattern += int_p
+        if counter == 0:
+            print(int_p.sum())
         #bg = cp.random.randint(0, diff_pattern.size, self.background)
         #diff_pattern.ravel()[bg] += self.adu_phot
 

@@ -3,7 +3,7 @@
 #!/bin/bash
 
 #SBATCH --nodes=1
-#SBATCH --nodelist=mpsd-hpc-gpu-003
+#SBATCH --nodelist=mpsd-hpc-gpu-004
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
 #SBATCH --time=12:00:00
@@ -17,4 +17,5 @@
 #hostname
 #nvidia-smi
 #sshfs laptop:/media/wittetam/Expansion/ /home/wittetam/mount/
-srun python gpu_sim.py -n 1000 -N 100000 -m 21 -i 1 -f 1 -t 0 -a 2
+#srun python kalpha.py
+srun python kbeta.py
