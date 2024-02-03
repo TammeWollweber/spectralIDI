@@ -5,7 +5,7 @@ from scipy import constants as const
 Vunit = 320.085/1000 #nm**3
 lattice_constant = 7.464/10 #nm
 atoms_unit = 58
-particle_size = 300 #nm
+particle_size = 100 #nm
 Vnp = 4/3*np.pi*(particle_size/2)**3
 natoms = Vnp / Vunit * atoms_unit
 mu = 3.063e-6
@@ -37,7 +37,7 @@ darwin_width_a = 9.27 #arcsec
 yield_alpha = 0.31018 * (0.58134 + 0.29394)
 
 #Parameter kbeta
-det_dist_b = 1.5 #meter
+det_dist_b = 1 #meter
 darwin_width_b = 5.176 #arcsec
 yield_beta = 0.31018 * 0.08153
 

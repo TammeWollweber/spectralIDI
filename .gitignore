@@ -5,3 +5,4 @@ __*
 *.pdf
 figures/
 scripts/
+*.npy

@@ -49,9 +49,9 @@ class Signal():
         self.num_photons = num_photons
         self.emission_line = emission_line
 
-        self.size_em1 = 10
-        self.size_em2 = 14
-        self.sample_shape = (30,30)
+        self.size_em1 = None
+        self.size_em2 = None
+        self.sample_shape = (256, 256)
         self.sample = None
         self.hits = []
         self.hit_size = None
@@ -67,21 +67,21 @@ class Signal():
             self.shots_per_file = 1000
         else:
             self.shots_per_file = 250
+        if self.num_shots < self.shots_per_file:
+            self.shots_per_file = self.num_shots
+        self.file_counter = 0
  
-        self.file_per_run_counter = 0
         self.data = []
         self.run_num = 0
         self.exp = None
-        self.dir = '/mpsd/cni/processed/wittetam/sim/raw/'
+        self.dir = '/scratch/wittetam/spectral_sim/raw/'
+        #self.dir = '/mpsd/cni/processed/wittetam/spectral_sim/raw/'
         self.num_cores = None
         self.integrated_signal = None
         self.tau = None
         self.width = None
         self.pulse_dur = 6200
-        self.lam = 0.19e-9
-        self.particle_size = particle_size*1e-9
-        self.rpix_size = None
-        self.rscale = None
+        self.particle_size = particle_size
         self._init_directory()
         self._init_lines()
 
@@ -112,8 +112,8 @@ class Signal():
         self.width = float(config[e]['kalpha2']['w'])
         print('coherence time, width kalpha2: ', self.tau, self.width)
 
-    def _calc_energy_resolution(self, e_cen, counter):
-        lam_cen = const.h * const.c / (e_cen * const.e)
+    def _calc_energy_resolution(self,  counter):
+        lam_cen = const.h * const.c / (self.E * const.e)
         tcen = 58.84 
         lat = lam_cen / (2*np.sin(tcen/180*np.pi))
         phi = np.arctan(1024*self.pixel_size/self.det_distance)*180/np.pi
@@ -141,16 +141,18 @@ class Signal():
         E3 = float(self.specs[-1]['E']) #elastic 
         phi3 = float(self.specs[-1]['phi'])
         e_sep = E3 - E1
-        e_center = np.round((E1+E3)/2).astype(int)
-        self._calc_energy_resolution(e_center, counter)
+        self.E = np.round((E1+E3)/2).astype(int)
+        self._calc_energy_resolution(counter)
 
         phi_cen = (phi1+phi3)/2
+        self.kvector = (2*cp.sin(0.5*cp.arctan((cp.arange(self.det_shape[1])-self.det_shape[1]//2)*self.pixel_size/self.det_distance))/(1239.84/self.E)).astype('f4')
 
-        N = self.det_distance / self.pixel_size
-        self.rpix_size = self.particle_size / (self.size_em2*2)
-        self.rscale = (self.rpix_size/self.lam) / N
-
-        print('det dist E: ', self.det_dist_E)
+        qmax = cp.max(np.abs(self.kvector))
+        self.rscale = 1/(2*qmax)
+        self.size_em1 = cp.rint((self.particle_size / self.rscale - 1) / 2).get().astype(int)
+        self.size_em2 = np.ceil(self.size_em1/0.7).astype(int)
+ 
+        print('size emitter: ', self.size_em1, self.size_em2)
         x1 = self.det_dist_E * np.tan(np.abs(phi1-phi_cen)*cp.pi/180)
         x2 = self.det_dist_E * np.tan(np.abs(phi2-phi_cen)*cp.pi/180)
         x3 = self.det_dist_E * np.tan(np.abs(phi3-phi_cen)*cp.pi/180)
@@ -162,24 +164,24 @@ class Signal():
         self.deltaE = np.max((self.dE_b1, self.dE_b2))
 
         self.mode_period = self.tau * self.width / (self.deltaE * self.e_res)
+ 
+        self.xkb1 = self.det_shape[1]//2 - self.pix_sep//2
+        self.xkb2 = self.det_shape[1]//2 - self.pix_sep//2 + self.beta_shift
+        self.xkel = self.det_shape[1]//2 + self.pix_sep//2
+
+       
+        self.create_sample()
+        self.sample = cp.array(self.sample)
     
         if counter == 0:
             print('phi: ', phi1, phi2, phi3, phi_cen)
-            print('rscale: ', self.rscale, self.rpix_size)
             print('pix_sep: ', self.pix_sep)
             print('bshift: ', self.beta_shift)
             print('Energy resolution from pixels: ', self.e_res)
             print('Uncertainty from darwin: ', self.dE_b1, self.dE_b2)
-            print('ecenter: ', e_center)
+            print('ecenter: ', self.E)
             print('mode_period: ', self.mode_period)
             print('dE [eV], [pix]: ', self.deltaE*self.e_res, self.deltaE)
-        self.xkb1 = self.det_shape[1]//2 - self.pix_sep//2
-        self.xkb2 = self.det_shape[1]//2 - self.pix_sep//2 + self.beta_shift
-        self.xkel = self.det_shape[1]//2 + self.pix_sep//2
-        print('xpos: ', self.xkb1, self.xkb2, self.xkel)
-        e_range = np.round(self.det_shape[1] * self.e_res).astype(int)
-        self.kvector = cp.arange(self.det_shape[0]) - self.det_shape[0]//2
-        self.sample = cp.array(self.sample)
 
     def create_sample(self):
         self.sample = np.zeros(self.sample_shape)
@@ -219,46 +221,43 @@ class Signal():
 
 
     def sim_glob(self):
-        self.file_per_run_counter = 0
         num_jobs = NUM_DEV * JOBS_PER_DEV
         try:
             mp.set_start_method('spawn')
         except RuntimeError:
             pass
 
-        jobs = [mp.Process(target=self.worker, args=(d,)) for
+        data_arr = mp.Array(ctypes.c_double, self.shots_per_file*int(np.product(self.det_shape)))
+        jobs = [mp.Process(target=self.worker, args=(d, data_arr)) for
                     d in range(num_jobs)]
         [j.start() for j in jobs]
         [j.join() for j in jobs]
-        self.run_num += 1
 
+        self.data = np.frombuffer(data_arr.get_obj()).reshape((self.shots_per_file, ) + self.det_shape)
       
-    def worker(self, rank):
+    def worker(self, rank, data):
         num_jobs = NUM_DEV * JOBS_PER_DEV
         devnum = rank // JOBS_PER_DEV
         cp.cuda.Device(devnum).use()
-
-        num_files = np.ceil(self.num_shots / self.shots_per_file).astype(int)
         stime = time.time()
-        for i, _ in enumerate(np.arange(num_files)[rank::num_jobs]):
+
+        mydata = np.frombuffer(data.get_obj()).reshape((self.shots_per_file,) + self.det_shape)
+        self._init_sim(rank)
+
+        for i, _ in enumerate(np.arange(self.shots_per_file)[rank::num_jobs]):
+            self.data = cp.zeros(self.det_shape)
             idx = i*num_jobs+rank
             cp.random.seed(idx+int(time.time()))
-            self._init_sim(i)
-            data = cp.zeros((self.shots_per_file, self.det_shape[0], self.det_shape[1]))
-            self.sim_file(data, idx)
-            self.save_file(data, idx)
-            if rank == 0:
-                sys.stderr.write(',  %.3f s/file\n' % ((time.time()-stime) / (i+1)))
+            self.sim_file(idx)
+            mydata[idx] = self.data.get()
+        if rank == 0:
+            sys.stderr.write('%d,  %.3f s/file\n' % (self.file_counter, (time.time()-stime) / (i+1)))
 
-    def sim_file(self, data, counter):
+    def sim_file(self, counter):
         num_jobs = NUM_DEV * JOBS_PER_DEV
-        n = 0
-        while n < self.shots_per_file:
-            diff_pattern = self._sim_frame(counter+n)
-            if counter % num_jobs == 0:
-                sys.stderr.write('\r%s: %d'%(counter, n))
-            data[n] = diff_pattern
-            n += 1
+        self._sim_frame(counter)
+        if counter % num_jobs == 0:
+            sys.stderr.write('\r%s'%(counter))
         
     def _sim_frame(self, counter):
         kbeta1 = self.lorentzian(cp.arange(self.det_shape[1]), 1, self.xkb1, 2.97/self.e_res)  
@@ -272,10 +271,12 @@ class Signal():
 
         inner_weight = self.p_inner.sum()
         outer_weight = self.p_outer.sum()
-        diff_pattern = cp.zeros(self.det_shape)
-        indices = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=self.num_photons, p=self.p_tot/self.p_tot.sum()).astype('u2')
-        ind_inner = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=np.round(self.num_photons*(inner_weight/(inner_weight+outer_weight))).astype(int), p=self.p_inner/self.p_inner.sum()).astype('u2')
-        ind_outer = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=np.round(self.num_photons*(outer_weight/(inner_weight+outer_weight))).astype(int), p=self.p_outer/self.p_outer.sum()).astype('u2')
+
+        size = len(cp.where(self.sample != 0)[0])
+
+        indices = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=size, p=self.p_tot/self.p_tot.sum()).astype('u2')
+        ind_inner = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=np.round(size*(inner_weight/(inner_weight+outer_weight))).astype(int), p=self.p_inner/self.p_inner.sum()).astype('u2')
+        ind_outer = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=np.round(size*(outer_weight/(inner_weight+outer_weight))).astype(int), p=self.p_outer/self.p_outer.sum()).astype('u2')
 
         if counter == 0:
             print('num modes: ', num_modes)
@@ -283,14 +284,14 @@ class Signal():
         r_k_el = cp.outer(indices*self.rscale,self.kvector)
         r_k1 = cp.outer(ind_inner*self.rscale,self.kvector)
         r_k2 = cp.outer(ind_outer*self.rscale,self.kvector)
-        phases_fl_inner = 2*cp.pi*cp.array(cp.random.random(size=(num_modes, ind_inner.shape[0]))).astype('f4')
+        phases_fl_inner = cp.array(cp.random.random(size=(num_modes, ind_inner.shape[0]))).astype('f4')
 
-        phases_fl_outer = 2*cp.pi*cp.array(cp.random.random(size=(num_modes, ind_outer.shape[0]))).astype('f4')
+        phases_fl_outer = cp.array(cp.random.random(size=(num_modes, ind_outer.shape[0]))).astype('f4')
         phases_el = cp.zeros((1, num_modes, indices.shape[0])).astype('f4')
 
-        psi_fl_inner = cp.exp(1j*(r_k1[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_fl_inner)).sum(-1)
-        psi_fl_outer = cp.exp(1j*(r_k2[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_fl_outer)).sum(-1)
-        psi_el = cp.exp(1j*(r_k_el[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_el)).sum(-1)
+        psi_fl_inner = cp.exp(1j*2*cp.pi*(r_k1[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_fl_inner)).sum(-1)
+        psi_fl_outer = cp.exp(1j*2*cp.pi*(r_k2[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_fl_outer)).sum(-1)
+        psi_el = cp.exp(1j*2*cp.pi*(r_k_el[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_el)).sum(-1)
 
         psi_fl_inner *= (pop / pop_max)
         psi_fl_outer *= (pop / pop_max)
@@ -313,20 +314,17 @@ class Signal():
         
         mode_fl = int2d_fl_inner + int2d_fl_outer
         mode_fl *= self.num_photons / mode_fl.sum()
-        int_tot = mode_fl + int2d_el * 0.1 * self.num_photons / int2d_el.sum()
-        #int_tot = mode_fl + int2d_el * 10 * self.num_photons / int2d_el.sum()
+        #int_tot = mode_fl + int2d_el * 0.1 * self.num_photons / int2d_el.sum()
+        int_tot = mode_fl + int2d_el * 10 * self.num_photons / int2d_el.sum()
         int_p = cp.random.poisson(cp.abs(int_tot),size=self.det_shape)
         int_p *= self.adu_phot
-        diff_pattern += int_p
-        if counter == 0:
-            print(int_p.sum())
+        self.data += int_p
         #bg = cp.random.randint(0, diff_pattern.size, self.background)
         #diff_pattern.ravel()[bg] += self.adu_phot
 
         #gauss_noise = cp.random.normal(self.noise_level,2.5,self.det_shape)
         
         #diff_pattern += gauss_noise
-        return diff_pattern
 
     def calc_beam_profile(self, counter):
         x = cp.arange(-1e4, 1e4, self.mode_period) #(FWHM/num_modes without polarization)
@@ -341,9 +339,10 @@ class Signal():
         return cp.repeat(y_final,2) #repeat to take polarization into account
 
 
-    def save_file(self, data, counter):
+    def save_file(self):
         dpath = self.dir + '{}/'.format(self.exp)
-        np.ndarray.tofile((data.get()).astype('u2'), dpath+'Run{}_{:04d}.npy'.format(self.run_num,counter))
+        np.ndarray.tofile(self.data.astype('u2'), dpath+'Run{}_{:04d}.npy'.format(self.run_num,self.file_counter))
+        self.file_counter += 1
        
 
 if __name__ == '__main__':
@@ -376,8 +375,13 @@ if __name__ == '__main__':
     emission_lines = ['kbeta1,3']
     print('Detector distance: ', det_dist)
     print('Simulate {} line for {}'.format(emission_lines, elements))
+    file_chunk = 1000
+    num_files = np.ceil(num_shots/file_chunk).astype(int)
+    print('num files: ', num_files)
  
     sig = Signal(elements, emission_lines, det_shape=det_shape, binning=binning, num_shots=num_shots, num_photons=num_photons, emission_line=line, noise=noise, efilter=efilter, det_dist=det_dist, si_dist=si_dist, pixel_size=pixel_size, particle_size=particle_size)
-    sig.create_sample()
-    sig.sim_glob()
+    
+    for i in range(num_files):
+        sig.sim_glob()
+        sig.save_file()
 

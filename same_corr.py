@@ -225,7 +225,7 @@ class ProcessCorr():
 def main():
     parser = argparse.ArgumentParser(description='Correlate dense frames')
     parser.add_argument('-c', '--config_fname', help='Config file',
-                        default='conf_alpha.ini')
+                        default='corr_alpha.ini')
     parser.add_argument('-s', '--config_section', help='Section in config file (default: corr)', default='corr')
     parser.add_argument('-r', '--run_num', type=int, help='run_num, if None take from config file', default=-1)
     args = parser.parse_args()
@@ -255,7 +255,7 @@ def main():
     for r in runs:
         for s in starts:
             print('Processing run %s:%d' % (exp, r))
-            data_glob = '/mpsd/cni/processed/wittetam/sim/raw/%s/Run%d_*.npy' % (exp, r)
+            data_glob = '/mpsd/cni/processed/wittetam/spectral_sim/raw/{}/Run{}_*.npy'.format(exp, r)
             output_fname = 'data/%s_Run%d' % (exp,r)
             output_fname += '.h5'
             print('Writing output to', output_fname)
