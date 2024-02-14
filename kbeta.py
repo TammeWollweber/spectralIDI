@@ -26,7 +26,7 @@ from cupyx.scipy import signal as cusignal
 from cupyx.scipy import ndimage as cundimage
 plt.ion()
 
-NUM_DEV = 4
+NUM_DEV = 2
 JOBS_PER_DEV = 1
 
 class Signal():  
@@ -241,13 +241,13 @@ class Signal():
         cp.cuda.Device(devnum).use()
         stime = time.time()
 
+        cp.random.seed((os.getpid() * int(time.time())) % 123456789)
         mydata = np.frombuffer(data.get_obj()).reshape((self.shots_per_file,) + self.det_shape)
         self._init_sim(rank)
 
         for i, _ in enumerate(np.arange(self.shots_per_file)[rank::num_jobs]):
             self.data = cp.zeros(self.det_shape)
             idx = i*num_jobs+rank
-            cp.random.seed(idx+int(time.time()))
             self.sim_file(idx)
             mydata[idx] = self.data.get()
         if rank == 0:

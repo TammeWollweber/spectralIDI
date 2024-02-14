@@ -26,7 +26,7 @@ from cupyx.scipy import signal as cusignal
 from cupyx.scipy import ndimage as cundimage
 plt.ion()
 
-NUM_DEV = 4
+NUM_DEV = 1
 JOBS_PER_DEV = 1
 
 class Signal():  
@@ -172,6 +172,7 @@ class Signal():
         if counter == 0:
             print('phi: ', phi1, phi2, tcen)
             print('rscale: ', self.rscale)
+            print('size_em: ', self.size_em)
             print('cen, pix_sep: ', self.E, self.pix_sep)
             print('Energy resolution from pixels: ', self.e_res)
             print('Uncertainty from darwin: ', self.dE_a1, self.dE_a2)
@@ -227,13 +228,13 @@ class Signal():
         cp.cuda.Device(devnum).use()
         stime = time.time()
 
+        cp.random.seed((os.getpid() * int(time.time())) % 123456789)
         mydata = np.frombuffer(data.get_obj()).reshape((self.shots_per_file,) + self.det_shape)
         self._init_sim(rank)
 
         for i, _ in enumerate(np.arange(self.shots_per_file)[rank::num_jobs]):
             self.data = cp.zeros(self.det_shape) 
             idx = i*num_jobs+rank
-            cp.random.seed(idx+int(time.time()))
             self.sim_file(idx)
             mydata[idx] = self.data.get()
         if rank == 0:
@@ -260,31 +261,48 @@ class Signal():
 
         size = len(cp.where(self.sample != 0)[0])
         indices = cp.random.choice(cp.arange(0,self.sample.shape[0]), size=size, p=self.psample/self.psample.sum())
-        r_k = cp.outer(indices*self.rscale,self.kvector)
-        if self.incoherent:
-            phases_rand = cp.array(cp.random.random(size=(2, num_modes, indices.shape[0])))
-        else:
-            phases_rand = cp.zeros((2, num_modes, indices.shape[0]))
+        num_chunks = np.max((16//self.binning**2,1))
+        chunk_size = indices.shape[0]//num_chunks
 
-        psi = cp.exp(1j*2*cp.pi*(r_k[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_rand)).sum(-1)
-        psi *= (pop / pop_max)/2
+        intens = cp.zeros(self.det_shape)
+        psi_spec = None
+        for i in range(num_chunks):
+            r_k = cp.outer(indices[i*chunk_size:(i+1)*chunk_size]*self.rscale, self.kvector)
+            #r_k = cp.outer(indices*self.rscale,self.kvector)
+            if self.incoherent:
+                phases_rand = cp.array(cp.random.random(size=(2, num_modes, chunk_size)))
+            else:
+                phases_rand = cp.zeros((2, num_modes, chunk_size))
 
+            psi = cp.exp(1j*2*cp.pi*(r_k[:,:,cp.newaxis,cp.newaxis].transpose(1,2,3,0)+phases_rand)).sum(-1)
+            if self.alpha_modes == 1:
+                if i == 0:
+                    psi_spec = (psi.mean(1).transpose(1,0)[:,:,cp.newaxis] * spectrum[cp.newaxis,:])
+                else:
+                    psi_spec += (psi.mean(1).transpose(1,0)[:,:,cp.newaxis] * spectrum[cp.newaxis,:])
+
+            elif self.alpha_modes == 2:
+                if i == 0:
+                    psi_spec = (psi.T[:,:,:,cp.newaxis] * kspec[cp.newaxis,cp.newaxis,:,:].transpose(0,2,1,3)).transpose(0,2,3,1)
+                else:
+                    psi_spec += (psi.T[:,:,:,cp.newaxis] * kspec[cp.newaxis,cp.newaxis,:,:].transpose(0,2,1,3)).transpose(0,2,3,1)
+
+            elif self.alpha_modes == 3:
+                if i == 0:
+                    psi_spec_i = (psi.T[:,:,:,cp.newaxis] * kspec[cp.newaxis,cp.newaxis,:,:].transpose(0,2,1,3)).transpose(0,2,3,1)
+                
+                    beat_phases = (cp.arange(num_modes) * self.mode_period/self.beat_period * 2*cp.pi) % (2*cp.pi)
+                    psi_spec = 1/2 * (psi_spec[:,:,:,0] + (psi_spec_i[:,:,:,1].T * cp.exp(1j*beat_phases)).T)
+
+        psi_spec = (psi_spec.T *  (pop / pop_max)).T
         if self.alpha_modes == 1:
-            psi_spec = (psi.mean(1).transpose(1,0)[:,:,cp.newaxis] * spectrum[cp.newaxis,:])
             mode_int = cp.abs(psi_spec)**2
             int_tot = mode_int.sum(0)
-
         elif self.alpha_modes == 2:
-            psi_spec = (psi.T[:,:,:,cp.newaxis] * kspec[cp.newaxis,cp.newaxis,:,:].transpose(0,2,1,3)).transpose(0,2,3,1)
             mode_int = cp.abs(psi_spec)**2
             int_tot = mode_int.sum(0).mean(-1)
-        
         elif self.alpha_modes == 3:
-            psi_spec = (psi.T[:,:,:,cp.newaxis] * kspec[cp.newaxis,cp.newaxis,:,:].transpose(0,2,1,3)).transpose(0,2,3,1)
-            
-            beat_phases = (cp.arange(num_modes) * self.mode_period/self.beat_period * 2*cp.pi) % (2*cp.pi)
-            psi2d_beat = 1/2 * (psi_spec[:,:,:,0] + (psi_spec[:,:,:,1].T * cp.exp(1j*beat_phases)).T)
-            mode_int = cp.abs(psi2d_beat)**2
+            mode_int = cp.abs(psi_spec)**2
             int_tot = mode_int.sum(0)
 
         int_tot /= int_tot.sum() / self.num_photons
@@ -316,7 +334,7 @@ class Signal():
         y_final = (y_noise * mask)//2
         #cp.save('beam_profile_{}.npy'.format(counter), y_noise)
         y_final = y_final[y_final!=0]
-        return cp.repeat(y_final,2)
+        return cp.repeat(y_final,2) / 2
 
 
     def save_file(self):

@@ -255,7 +255,8 @@ def main():
     for r in runs:
         for s in starts:
             print('Processing run %s:%d' % (exp, r))
-            data_glob = '/mpsd/cni/processed/wittetam/spectral_sim/raw/{}/Run{}_*.npy'.format(exp, r)
+            data_glob = '/scratch/wittetam/spectral_sim/raw/{}/Run{}_*.npy'.format(exp, r)
+            #data_glob = '/mpsd/cni/processed/wittetam/spectral_sim/raw/{}/Run{}_*.npy'.format(exp, r)
             output_fname = 'data/%s_Run%d' % (exp,r)
             output_fname += '.h5'
             print('Writing output to', output_fname)
